@@ -40,6 +40,7 @@
  */
 
 #include "parflow.h"
+#include "seepage.h"
 #include "llnlmath.h"
 #include "llnltyps.h"
 #include "assert.h"
@@ -63,6 +64,7 @@ typedef struct {
   double SpinupDampP2; // NBE
   int tfgupwind;  // RMM
   int using_MGSemi;  // RMM
+  SeepageLookup seepage;
 } PublicXtra;
 
 typedef struct {
@@ -147,7 +149,19 @@ int jacobian_stencil_shape_C[5][3] = { { 0, 0, 0 },
 
 /*  This routine provides the interface between KINSOL and ParFlow
  *  for richards' equation jacobian evaluations and matrix-vector multiplies.*/
-
+#if defined (PARFLOW_HAVE_SUNDIALS)
+#include "kinsol/kinsol.h"
+int       KINSolMatVec(
+                       N_Vector pf_n_x,
+                       N_Vector pf_n_y,
+                       N_Vector pf_n_pressure,
+                       int *    recompute,
+                       void *   current_state)
+{
+  Vector      *x = N_VectorData(pf_n_x);
+  Vector      *y = N_VectorData(pf_n_y);
+  Vector      *pressure = N_VectorData(pf_n_pressure);
+#else
 int       KINSolMatVec(
                        void *   current_state,
                        N_Vector x,
@@ -155,6 +169,7 @@ int       KINSolMatVec(
                        int *    recompute,
                        N_Vector pressure)
 {
+#endif
   PFModule    *richards_jacobian_eval = StateJacEval(((State*)current_state));
   Matrix      *J = StateJac(((State*)current_state));
   Matrix      *JC = StateJacC(((State*)current_state));
@@ -260,7 +275,7 @@ void    RichardsJacobianEval(
   Vector      *KNns = (instance_xtra->KNns);
   Vector      *KSns = (instance_xtra->KSns);
   Subvector   *kw_sub, *ke_sub, *kn_sub, *ks_sub, *kwns_sub, *kens_sub, *knns_sub, *ksns_sub, *top_sub, *sx_sub;
-  double      *kw_der, *ke_der, *kn_der, *ks_der, *kwns_der, *kens_der, *knns_der, *ksns_der;
+  double      *kw_der = NULL, *ke_der = NULL, *kn_der = NULL, *ks_der = NULL, *kwns_der = NULL, *kens_der = NULL, *knns_der = NULL, *ksns_der = NULL;
 
   double gravity = ProblemGravity(problem);
   double viscosity = ProblemPhaseViscosity(problem, 0);
@@ -271,18 +286,22 @@ void    RichardsJacobianEval(
   Subvector   *x_ssl_sub, *y_ssl_sub;    //@RMM
   double      *x_ssl_dat = NULL, *y_ssl_dat = NULL;     //@RMM
 
-  /* @RMM variable dz multiplier */
+  /* RMM variable dz multiplier */
   Vector      *z_mult = ProblemDataZmult(problem_data);              //@RMM
   Subvector   *z_mult_sub;    //@RMM
   double      *z_mult_dat;    //@RMM
 
-  /* @RMM Flow Barrier / Boundary values */
+  /* RMM Flow Barrier / Boundary values */
   Vector      *FBx = ProblemDataFBx(problem_data);
   Vector      *FBy = ProblemDataFBy(problem_data);
   Vector      *FBz = ProblemDataFBz(problem_data);
   Subvector   *FBx_sub, *FBy_sub, *FBz_sub;    //@RMM
   double      *FBx_dat, *FBy_dat, *FBz_dat;     //@RMM
 
+/* RMM Top patch indicator for multiple  combined overland BC */
+  Vector      *patch = ProblemDataPatchIndexOfDomainTop(problem_data);
+  Subvector   *patch_sub;
+  double      *patch_dat;
   Subgrid     *subgrid;
 
   Subvector   *p_sub, *d_sub, *s_sub, *po_sub, *rp_sub, *ss_sub;
@@ -1475,6 +1494,8 @@ void    RichardsJacobianEval(
       kens_sub = VectorSubvector(KEns, is);
       knns_sub = VectorSubvector(KNns, is);
       ksns_sub = VectorSubvector(KSns, is);
+      /* RMM added to provide patch access */
+      patch_sub = VectorSubvector(patch, is);
 
       top_sub = VectorSubvector(top, is);
       sx_sub = VectorSubvector(slope_x, is);
@@ -1519,13 +1540,14 @@ void    RichardsJacobianEval(
       ksns_der = SubvectorData(ksns_sub);
 
       top_dat = SubvectorData(top_sub);
+      patch_dat = SubvectorData(patch_sub);
 
       ForBCStructNumPatches(ipatch, bc_struct)
       {
         ForPatchCellsPerFace(OverlandKinematicBC,
                              BeforeAllCells(DoNothing),
                              LoopVars(i, j, k, ival, bc_struct, ipatch, is),
-                             Locals(int io, io1, itop, ip, im, k1; ),
+                             Locals(int io, io1, itop, ip, im, iitmp, k1; ),
                              CellSetup(DoNothing),
                              FACE(LeftFace, DoNothing), FACE(RightFace, DoNothing),
                              FACE(DownFace, DoNothing), FACE(UpFace, DoNothing),
@@ -1587,12 +1609,22 @@ void    RichardsJacobianEval(
             }
           }
 
+          iitmp = (int)patch_dat[io1];
+
           /* Now add overland contributions to JC */
           if ((pp[ip]) > 0.0)
           {
-            /*diagonal term */
-            cp_c[io] += (vol / dz) + (vol / ffy) * dt * (ke_der[io1] - kw_der[io1])
-                        + (vol / ffx) * dt * (kn_der[io1] - ks_der[io1]);
+            /* RMM, switch if seepage face on */
+            if (IsSeepagePatch(&(public_xtra->seepage), iitmp))
+            {
+              cp_c[io] += (vol / dz) * (1.0 + 0.0);
+            }
+            else
+            {
+              /*regular overland diagonal term */
+              cp_c[io] += (vol / dz) + (vol / ffy) * dt * (ke_der[io1] - kw_der[io1])
+                          + (vol / ffx) * dt * (kn_der[io1] - ks_der[io1]);
+            }
           }
 
           /*west term */
@@ -1871,6 +1903,8 @@ void    RichardsJacobianEval(
       }
 
       top_sub = VectorSubvector(top, is);
+      /* RMM added to provide patch access */
+      patch_sub = VectorSubvector(patch, is);
       sx_sub = VectorSubvector(slope_x, is);
 
       sy_v = SubvectorNX(sx_sub);
@@ -1897,13 +1931,14 @@ void    RichardsJacobianEval(
       up = SubmatrixStencilData(J_sub, 6);
 
       top_dat = SubvectorData(top_sub);
+      patch_dat = SubvectorData(patch_sub);
 
       ForBCStructNumPatches(ipatch, bc_struct)
       {
         ForPatchCellsPerFace(OverlandKinematicBC,
                              BeforeAllCells(DoNothing),
                              LoopVars(i, j, k, ival, bc_struct, ipatch, is),
-                             Locals(int io1, ip, im; ),
+                             Locals(int io1, ip, itop, im, iitmp; ),
                              CellSetup(DoNothing),
                              FACE(LeftFace, DoNothing), FACE(RightFace, DoNothing),
                              FACE(DownFace, DoNothing), FACE(UpFace, DoNothing),
@@ -1912,17 +1947,27 @@ void    RichardsJacobianEval(
         {
           /* Loop over boundary patches to build J matrix. */
           io1 = SubvectorEltIndex(sx_sub, i, j, 0);
+          itop = SubvectorEltIndex(top_sub, i, j, 0);
 
           /* Update J */
           ip = SubvectorEltIndex(p_sub, i, j, k);
           im = SubmatrixEltIndex(J_sub, i, j, k);
 
+          iitmp = (int)patch_dat[itop];
           /* Now add overland contributions to J similar to JC above */
           if ((pp[ip]) > 0.0)
           {
-            /*diagonal term */
-            cp[im] += (vol / dz) + (vol / ffy) * dt * (ke_der[io1] - kw_der[io1])
-                      + (vol / ffx) * dt * (kn_der[io1] - ks_der[io1]);
+            /* RMM, switch seepage face on optionally for specified surface patches */
+            if (IsSeepagePatch(&(public_xtra->seepage), iitmp))
+            {
+              cp[im] += dt * (vol / dz) * (1.0 + 0.0);
+            }
+            else
+            {
+              /*diagonal term */
+              cp[im] += (vol / dz) + (vol / ffy) * dt * (ke_der[io1] - kw_der[io1])
+                        + (vol / ffx) * dt * (kn_der[io1] - ks_der[io1]);
+            }
           }
 
           /*west term */
@@ -2374,6 +2419,9 @@ PFModule   *RichardsJacobianEvalNewPublicXtra(char *name)
   sprintf(key, "OverlandSpinupDampP2");
   public_xtra->SpinupDampP2 = GetDoubleDefault(key, 0.0);    // NBE
 
+  /* Collect seepage patches from Patch.<name>.BCPressure.Seepage flags. */
+  PopulateSeepagePatchesFromBCPressure(&(public_xtra->seepage));
+
 /* get preconditioner to check for MGSemi to use custom overland flow formulation*/
   precond_switch_na = NA_NewNameArray("NoPC MGSemi SMG PFMG PFMGOctree");
   sprintf(key, "Solver.Linear.Preconditioner");
@@ -2466,6 +2514,7 @@ void  RichardsJacobianEvalFreePublicXtra()
 
   if (public_xtra)
   {
+    SeepageLookupFree(&(public_xtra->seepage));
     tfree(public_xtra);
   }
 }
