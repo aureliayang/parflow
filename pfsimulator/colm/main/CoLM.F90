@@ -1,6 +1,6 @@
 #include <define.h>
 
-SUBROUTINE CoLM_LSM(pressure,saturation,evap_trans,topo,porosity,pf_dz_mult,istep_pf,dt,time,           &
+SUBROUTINE CoLM_LSM(pressure,saturation,evap_trans,top,bottom,porosity,pf_dz_mult,istep_pf,dt,time,     &
    start_time_pf,pdx,pdy,pdz,ix,iy,nx,ny,nz,nx_f,ny_f,nz_f,nz_rz,ip,npp,npq,npr,gnx,gny,rank,          &
    sw_pf,lw_pf,prcp_pf,tas_pf,u_pf,v_pf,patm_pf,qatm_pf,                                               &
    lai_pf,sai_pf,z0m_pf,displa_pf,slope_x_pf,slope_y_pf,                                               &
@@ -173,7 +173,8 @@ SUBROUTINE CoLM_LSM(pressure,saturation,evap_trans,topo,porosity,pf_dz_mult,iste
    real(r8) :: pressure((nx+2)*(ny+2)*(nz+2))     ! pressure head, from parflow on grid w/ ghost nodes for current proc
    real(r8) :: saturation((nx+2)*(ny+2)*(nz+2))   ! saturation from parflow, on grid w/ ghost nodes for current proc
    real(r8) :: evap_trans((nx+2)*(ny+2)*(nz+2))   ! ET flux from CLM to ParFlow on grid w/ ghost nodes for current proc
-   real(r8) :: topo((nx+2)*(ny+2)*(nz+2))         ! mask from ParFlow 0 for inactive, 1 for active, on grid w/ ghost nodes for current proc
+   real(r8) :: top((nx+2)*(ny+2)*3)               ! top PF k index, -1 for inactive, on the 2D grid with ghost nodes
+   real(r8) :: bottom((nx+2)*(ny+2)*3)            ! bottom PF k index, -1 for inactive, on the 2D grid with ghost nodes
    real(r8) :: porosity((nx+2)*(ny+2)*(nz+2))     ! porosity from ParFlow, on grid w/ ghost nodes for current proc
    real(r8) :: pf_dz_mult((nx+2)*(ny+2)*(nz+2))   ! dz multiplier from ParFlow on PF grid w/ ghost nodes for current proc
    real(r8) :: dt                                 ! parflow dt in parflow time units not CLM time units
@@ -261,7 +262,6 @@ SUBROUTINE CoLM_LSM(pressure,saturation,evap_trans,topo,porosity,pf_dz_mult,iste
    !integer  :: bj,bl                              ! indices for local looping !BH
  
    integer  :: j_incr,k_incr                      ! increment for j and k to convert 1D vector to 3D i,j,k array
-   integer, allocatable :: counter(:,:) 
    real(r8) :: total, begwatb
    !character*100 :: RI
    !real(r8) :: u         ! Tempoary UNDEF Variable  
@@ -342,7 +342,6 @@ if (time == start_time_pf) then !initialization
       !pdate(1) = p_year; pdate(2) = p_julian; pdate(3) = p_seconds
 
       !@CY: build numpatch and planar_mask
-      allocate( counter(nx,ny) )
       allocate( topo_mask(3,nx*ny) )            ! nx*ny >= numpatch
       allocate( planar_mask(3,nx*ny) ) 
       numpatch = 0
@@ -353,34 +352,20 @@ if (time == start_time_pf) then !initialization
       do j = 1, ny
          do i = 1, nx
 
-            ! i=tile(t)%col
-            ! j=tile(t)%row
-            counter(i,j) = 0
-            !clm(t)%topo_mask(3) = 1
-   
-            do k = nz, 1, -1 ! PF loop over z
-               l = 1+i + (nx+2)*(j) + (nx+2)*(ny+2)*(k)
-               if (topo(l) > 0) then
-                  counter(i,j) = counter(i,j) + 1
-                  if (counter(i,j) == 1) then
-                     numpatch = numpatch + 1
-                     topo_mask(1,numpatch) = k
-                     planar_mask(1,numpatch) = i
-                     planar_mask(2,numpatch) = j
-                     planar_mask(3,numpatch) = 1
-                  end if
-               endif
-   
-               if (topo(l) == 0 .and. topo(l+k_incr) > 0) topo_mask(3,numpatch) = k + 1
-   
-            enddo ! k
-   
-            topo_mask(2,numpatch) = topo_mask(1,numpatch) - nl_soil
+            l = 1+i + j_incr*j + k_incr
+            if (top(l) >= 0) then
+               numpatch = numpatch + 1
+               topo_mask(1,numpatch) = 1 + top(l)
+               topo_mask(3,numpatch) = 1 + bottom(l)
+               topo_mask(2,numpatch) = topo_mask(1,numpatch) - nl_soil
+               planar_mask(1,numpatch) = i
+               planar_mask(2,numpatch) = j
+               planar_mask(3,numpatch) = 1
+            endif
 
          enddo !i
       enddo !j
 
-      deallocate( counter )
 
       CALL Init_GlobalVars
 
