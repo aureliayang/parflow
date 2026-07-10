@@ -4,7 +4,7 @@ set(COLM_TESTS)
 
 if(${PARFLOW_HAVE_CLM})
     if(${PARFLOW_HAVE_HYPRE})
-        list(APPEND COLM_TESTS colm_ci)
+        list(APPEND COLM_TESTS colm)
     endif()
 endif()
 
