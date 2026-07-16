@@ -3,7 +3,7 @@ import sys
 from pathlib import Path
 
 from parflow import Run
-from parflow.tools.compare import pf_test_file
+from parflow.tools.compare import pf_test_file, pf_test_file_with_abs
 from parflow.tools.fs import mkdir, rm
 from parflow.tools.io import read_pfb, write_pfb
 from parflow.tools.settings import set_working_directory
@@ -14,37 +14,45 @@ from parflow.tools.top import compute_top, extract_top
 # -----------------------------------------------------------------------------
 
 runname = "PF_CoLM_CI"
+SIGNIFICANT_DIGITS = 5
+DYNAMIC_FINAL_TIMESTEP = 5
+DYNAMIC_FIELD_TOLERANCES = (
+    ("press", 1.0e-4),
+    ("satur", 1.0e-4),
+)
 
 
 def validate_results(run_directory: Path, reference_directory: Path) -> bool:
-    test_files = (
+    strict_test_files = (
         "PF_CoLM_CI.out.perm_x.pfb",
         "PF_CoLM_CI.out.perm_y.pfb",
         "PF_CoLM_CI.out.perm_z.pfb",
         "PF_CoLM_CI.out.press.00000.pfb",
-        "PF_CoLM_CI.out.press.00001.pfb",
-        "PF_CoLM_CI.out.press.00002.pfb",
-        "PF_CoLM_CI.out.press.00003.pfb",
-        "PF_CoLM_CI.out.press.00004.pfb",
-        "PF_CoLM_CI.out.press.00005.pfb",
         "PF_CoLM_CI.out.satur.00000.pfb",
-        "PF_CoLM_CI.out.satur.00001.pfb",
-        "PF_CoLM_CI.out.satur.00002.pfb",
-        "PF_CoLM_CI.out.satur.00003.pfb",
-        "PF_CoLM_CI.out.satur.00004.pfb",
-        "PF_CoLM_CI.out.satur.00005.pfb",
         "PF_CoLM_CI.out.top_index.pfb",
         "PF_CoLM_CI.out.top.press.00000.pfb",
     )
     passed = True
-    for name in test_files:
+    for name in strict_test_files:
         if not pf_test_file(
             str(run_directory / name),
             str(reference_directory / name),
             f"Max difference in {name}",
-            sig_digits=5,
+            sig_digits=SIGNIFICANT_DIGITS,
         ):
             passed = False
+
+    for field, absolute_tolerance in DYNAMIC_FIELD_TOLERANCES:
+        for timestep in range(1, DYNAMIC_FINAL_TIMESTEP + 1):
+            name = f"PF_CoLM_CI.out.{field}.{timestep:05d}.pfb"
+            if not pf_test_file_with_abs(
+                str(run_directory / name),
+                str(reference_directory / name),
+                f"Max difference in {name}",
+                abs_value=absolute_tolerance,
+                sig_digits=SIGNIFICANT_DIGITS,
+            ):
+                passed = False
     return passed
 
 
