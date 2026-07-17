@@ -43,16 +43,63 @@ ParFlow-CoLM setup. It sets `Solver.LSM = "CoLM"` while continuing to use
 the existing `Solver.CLM.*` ParFlow keys for shared land-model coupling
 controls such as forcing, output, restart, and root-zone settings.
 
+Unlike ParFlow-CLM, for which the number of coupled soil layers is
+configurable, **the current ParFlow-CoLM coupling supports exactly 10 coupled
+soil layers**. This restriction applies to the soil column exchanged between
+ParFlow and CoLM, not necessarily to the total number of layers in the
+ParFlow computational grid. The example therefore sets
+`Solver.CLM.RootZoneNZ = 10` and `Solver.CLM.SoiLayer = 10`, while using an
+additional deeper ParFlow layer below the coupled soil column.
+
+## CoLM Input Keys
+
+CoLM and CLM use the same ParFlow input keys for land-model coupling. The
+land surface model is selected with `Solver.LSM`, while forcing, output,
+restart, vegetation-water-stress, and root-zone controls for both models use
+the existing `Solver.CLM.*` key namespace.
+
+```python
+<runname>.Solver.LSM = "CoLM"
+<runname>.Solver.CLM.CLMFileDir = "clm_output_path"
+<runname>.Solver.CLM.Print1dOut = False
+<runname>.Solver.CLM.CLMDumpInterval = 1
+
+<runname>.Solver.CLM.MetForcing = "1D"
+<runname>.Solver.CLM.MetFileName = "station0.txt"
+<runname>.Solver.CLM.MetFilePath = "path/to/met/forcing/data/"
+<runname>.Solver.CLM.MetFileNT = 24
+<runname>.Solver.CLM.IstepStart = 1
+
+<runname>.Solver.CLM.EvapBeta = "Linear"
+<runname>.Solver.CLM.VegWaterStress = "Saturation"
+<runname>.Solver.CLM.ResSat = 0.2
+<runname>.Solver.CLM.WiltingPoint = 0.2
+<runname>.Solver.CLM.FieldCapacity = 1.00
+<runname>.Solver.CLM.IrrigationType = "none"
+
+<runname>.Solver.CLM.RootZoneNZ = 10
+<runname>.Solver.CLM.SoiLayer = 10
+<runname>.Solver.CLM.ReuseCount = 1
+<runname>.Solver.CLM.WriteLogs = False
+<runname>.Solver.CLM.WriteLastRST = True
+<runname>.Solver.CLM.DailyRST = True
+<runname>.Solver.CLM.SingleFile = True
+```
+
 ## Main CoLM Input Files
 
-The example uses two primary CoLM input files:
+The example requires three CoLM input files:
 
 - `CoLM_nlfile.nml`
 - `CoLM_readin.dat`
+- `snicar_par.dat`
 
-Additional files in the example directory provide meteorological forcing,
-snow optics parameters, ParFlow terrain and subsurface inputs, and run
-scripts.
+The first two files contain case-specific run controls, patch metadata, and
+soil properties. `snicar_par.dat` contains the SNICAR snow optics parameters.
+This file normally does not need to be modified, but it must be present in the
+run directory for CoLM to initialize and run. Additional files in the example
+directory provide meteorological forcing, ParFlow terrain and subsurface
+inputs, and run scripts.
 
 ### `CoLM_nlfile.nml`
 
@@ -105,23 +152,39 @@ The current reader expects each row in the following order:
 
 `patchclass` identifies the CoLM land-cover or patch-type class, while
 `patchlonr` and `patchlatr` provide the patch longitude and latitude.
-The five vertically resolved soil-property groups represent coarse
-fragments, sand, clay, soil organic carbon, and fine-earth bulk density,
-respectively.
+The five vertically resolved soil-property groups are:
 
-The table provides eight levels of soil texture and physical property
-data. In the ParFlow-CoLM configuration described by Yang et al. (2026)
-and used by this example, CoLM uses a 10-layer soil column, while the
-legacy ParFlow-CLM coupling uses a 4-layer soil column. Only eight
-soil-property levels are provided in `CoLM_readin.dat` because the
-coupling maps these data onto the 10 CoLM soil layers by reusing the
-same properties for layers 1 and 2, and again for layers 9 and 10. Thus,
-layers 1 and 2 share identical soil properties, layers 9 and 10 share
-identical soil properties, and the remaining layers use the
-corresponding entries from the eight-level input table.
+- `int_soil_bd_l` (`BD`): bulk density of fine earth, including its mineral
+  and organic components, in `g/cm^3`.
+- `int_soil_grav_l` (`GRAV`): gravel or coarse-fragment content as a
+  percentage of soil volume.
+- `int_soil_oc_l` (`SOC`): organic carbon content of fine earth as a
+  percentage by weight.
+- `int_soil_sand_l` (`SAND`): sand content of the mineral fine-earth
+  fraction (50-2000 micrometers) as a percentage by weight.
+- `int_soil_clay_l` (`CLAY`): clay content of the mineral fine-earth
+  fraction (0-2 micrometers) as a percentage by weight.
 
-In the example, the file contains 30 rows, matching the 6 by 5
-horizontal grid used by `unname_test.py`.
+The soil-property data used to prepare `CoLM_readin.dat` are derived from the
+[Global Soil Dataset for Earth System Modeling (GSDE)](https://globalchange.bnu.edu.cn/research/soilw).
+GSDE provides these properties at eight depth intervals extending to about
+2.3 m, corresponding to the eight values supplied for each property group in
+the current coupling input.
+
+Only eight soil-property levels are provided in `CoLM_readin.dat` because
+the coupling maps these data onto the 10 CoLM soil layers by reusing the same
+properties for layers 1 and 2, and again for layers 9 and 10. Thus, layers 1
+and 2 share identical soil properties, layers 9 and 10 share identical soil
+properties, and the remaining layers use the corresponding entries from the
+eight-level input table.
+
+### `snicar_par.dat`
+
+`snicar_par.dat` provides the optical parameters used by the SNICAR snow
+radiative-transfer scheme in CoLM. The supplied file should be used without
+modification for normal ParFlow-CoLM simulations. Although users do not need
+to configure its contents, the file is a required CoLM runtime input and must
+be available as `snicar_par.dat` in the run directory.
 
 ## Example Directory
 
@@ -139,7 +202,8 @@ Important files include:
   soil-property table.
 - `station0.txt`: 1-D meteorological forcing used by
   `Solver.CLM.MetForcing = "1D"`.
-- `snicar_par.dat`: snow optics parameter file used by CoLM snow physics.
+- `snicar_par.dat`: required SNICAR snow optics parameter file; normally used
+  without modification.
 - `unname.slopex.pfb`, `unname.slopey.pfb`, `unname.manning.pfb`, and
   `unname.subsur.pfb`: ParFlow terrain, Manning's coefficient, and
   subsurface inputs used by the example.
