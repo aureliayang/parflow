@@ -59,7 +59,7 @@ For this case, the solver needs to be set to RICHARDS::
 
    pfset Solver		Richards
 
-ParFlow may also be coupled with the land surface models ``CLM`` :cite:p:`Dai03` and ``CoLM``.
+ParFlow may also be coupled with the land surface models ``CLM`` :cite:p:`Dai03` and ``CoLM`` :cite:p:`Yang2026`.
 The bundled land model code has been modified to be called
 from within ParFlow as a subroutine, to support parallel infrastructure including I/O and most importantly with modified physics
 to support coupled operation to best utilize the integrated hydrology in ParFlow :cite:p:`MM05, KM08a`.
