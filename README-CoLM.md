@@ -4,16 +4,13 @@ ParFlow-CoLM is a renewed coupling effort that connects ParFlow's
 three-dimensional variably saturated groundwater and overland-flow
 solver with the updated water and energy modules of CoLM. Following the
 original ParFlow-CLM coupling framework, CoLM provides land-surface net
-water and energy fluxes to ParFlow as source/sink terms, while ParFlow
-returns soil moisture and pressure head to CoLM to close the coupled
-water and energy balance.
-
-CoLM is the latest generation of the Common Land Model developed and
-maintained by the Common Land Model team at Sun Yat-sen University, led
-by Prof. Yongjiu Dai. This ParFlow-CoLM coupling was developed in
-collaboration with the Common Land Model team.
-
-The current ParFlow-CoLM effort is described in:
+water fluxes to ParFlow as source/sink terms, while ParFlow
+returns soil moisture and pressure head to CoLM. CoLM is the latest 2024
+release of the Common Land Model, developed and maintained by the Common
+Land Model team. This ParFlow-CoLM coupling was led by Chen Yang's group in
+collaboration with the Common Land Model team. If you have any questions,
+please contact yangch329@mail.sysu.edu.cn. The current ParFlow-CoLM effort
+is described in:
 
 [Yang, C., Sun, A., Zhang, S., Dai, Y., Kollet, S., & Maxwell, R. (2026). 20 years of trials and insights: bridging legacy and next generation in ParFlow and Land Surface Model Coupling. Geoscientific Model Development, 19(5), 1849-1866.](https://doi.org/10.5194/gmd-19-1849-2026)
 
@@ -41,27 +38,27 @@ cmake ../parflow -DPARFLOW_HAVE_CLM=ON ...
 The example in `pfsimulator/colm/examples/colm_version` shows a compact
 ParFlow-CoLM setup. It sets `Solver.LSM = "CoLM"` while continuing to use
 the existing `Solver.CLM.*` ParFlow keys for shared land-model coupling
-controls such as forcing, output, restart, and root-zone settings.
+controls such as forcing, output, and root-zone settings.
 
 Unlike ParFlow-CLM, for which the number of coupled soil layers is
 configurable, **the current ParFlow-CoLM coupling supports exactly 10 coupled
 soil layers**. This restriction applies to the soil column exchanged between
 ParFlow and CoLM, not necessarily to the total number of layers in the
 ParFlow computational grid. The example therefore sets
-`Solver.CLM.RootZoneNZ = 10` and `Solver.CLM.SoiLayer = 10`, while using an
-additional deeper ParFlow layer below the coupled soil column.
+`Solver.CLM.RootZoneNZ = 10`, while using an additional deeper ParFlow layer
+below the coupled soil column.
 
 ## CoLM Input Keys
 
 CoLM and CLM use the same ParFlow input keys for land-model coupling. The
 land surface model is selected with `Solver.LSM`, while forcing, output,
-restart, vegetation-water-stress, and root-zone controls for both models use
-the existing `Solver.CLM.*` key namespace.
+vegetation-water-stress, and root-zone controls for both models use the
+existing `Solver.CLM.*` key namespace.
 
 ```python
 <runname>.Solver.LSM = "CoLM"
-<runname>.Solver.CLM.CLMFileDir = "clm_output_path"
-<runname>.Solver.CLM.Print1dOut = False
+<runname>.Solver.CLM.CLMFileDir = "clm_output_path"      # retained for CLM-key compatibility
+<runname>.Solver.CLM.Print1dOut = False                  # retained for CLM-key compatibility
 <runname>.Solver.CLM.CLMDumpInterval = 1
 
 <runname>.Solver.CLM.MetForcing = "1D"
@@ -75,14 +72,14 @@ the existing `Solver.CLM.*` key namespace.
 <runname>.Solver.CLM.ResSat = 0.2
 <runname>.Solver.CLM.WiltingPoint = 0.2
 <runname>.Solver.CLM.FieldCapacity = 1.00
-<runname>.Solver.CLM.IrrigationType = "none"
+<runname>.Solver.CLM.IrrigationType = "none"             # retained for CLM-key compatibility
 
 <runname>.Solver.CLM.RootZoneNZ = 10
-<runname>.Solver.CLM.SoiLayer = 10
+<runname>.Solver.CLM.SoiLayer = 10                       # retained for CLM-key compatibility
 <runname>.Solver.CLM.ReuseCount = 1
-<runname>.Solver.CLM.WriteLogs = False
-<runname>.Solver.CLM.WriteLastRST = True
-<runname>.Solver.CLM.DailyRST = True
+<runname>.Solver.CLM.WriteLogs = False                   # retained for CLM-key compatibility
+<runname>.Solver.CLM.WriteLastRST = True                 # retained for CLM-key compatibility
+<runname>.Solver.CLM.DailyRST = True                     # retained for CLM-key compatibility
 <runname>.Solver.CLM.SingleFile = True
 ```
 
@@ -166,7 +163,7 @@ The five vertically resolved soil-property groups are:
   fraction (0-2 micrometers) as a percentage by weight.
 
 The soil-property data used to prepare `CoLM_readin.dat` are derived from the
-[Global Soil Dataset for Earth System Modeling (GSDE)](https://globalchange.bnu.edu.cn/research/soilw).
+Global Soil Dataset for Earth System Modeling (GSDE).
 GSDE provides these properties at eight depth intervals extending to about
 2.3 m, corresponding to the eight values supplied for each property group in
 the current coupling input.
