@@ -14,57 +14,6 @@ from parflow.tools.top import compute_top, extract_top
 # -----------------------------------------------------------------------------
 
 runname = "PF_CoLM_CI"
-SIGNIFICANT_DIGITS = 5
-DYNAMIC_FINAL_TIMESTEP = 5
-DYNAMIC_FIELD_TOLERANCES = (
-    ("press", 1.0e-4),
-    ("satur", 1.0e-4),
-)
-
-
-def validate_results(run_directory: Path, reference_directory: Path) -> bool:
-    strict_test_files = (
-        "PF_CoLM_CI.out.perm_x.pfb",
-        "PF_CoLM_CI.out.perm_y.pfb",
-        "PF_CoLM_CI.out.perm_z.pfb",
-        "PF_CoLM_CI.out.press.00000.pfb",
-        "PF_CoLM_CI.out.satur.00000.pfb",
-        "PF_CoLM_CI.out.top_index.pfb",
-        "PF_CoLM_CI.out.top.press.00000.pfb",
-    )
-    passed = True
-    for name in strict_test_files:
-        if not pf_test_file(
-            str(run_directory / name),
-            str(reference_directory / name),
-            f"Max difference in {name}",
-            sig_digits=SIGNIFICANT_DIGITS,
-        ):
-            passed = False
-
-    for field, absolute_tolerance in DYNAMIC_FIELD_TOLERANCES:
-        for timestep in range(1, DYNAMIC_FINAL_TIMESTEP + 1):
-            name = f"PF_CoLM_CI.out.{field}.{timestep:05d}.pfb"
-            if not pf_test_file_with_abs(
-                str(run_directory / name),
-                str(reference_directory / name),
-                f"Max difference in {name}",
-                abs_value=absolute_tolerance,
-                sig_digits=SIGNIFICANT_DIGITS,
-            ):
-                passed = False
-    return passed
-
-
-def write_top_outputs(run_directory: Path) -> None:
-    mask = read_pfb(str(run_directory / "PF_CoLM_CI.out.mask.pfb"))
-    top = compute_top(mask)
-    write_pfb(str(run_directory / "PF_CoLM_CI.out.top_index.pfb"), top)
-
-    pressure = read_pfb(str(run_directory / "PF_CoLM_CI.out.press.00000.pfb"))
-    top_pressure = extract_top(pressure, top)
-    write_pfb(str(run_directory / "PF_CoLM_CI.out.top.press.00000.pfb"), top_pressure)
-
 
 # -----------------------------------------------------------------------------
 # SET WORK DIRECTORY
@@ -667,11 +616,52 @@ model.write(file_format="yaml")
 model.write(file_format="json")
 
 model.run(working_directory=run_dir)
-write_top_outputs(run_path)
 
-passed = validate_results(
-    run_path, example_dir.parents[1] / "correct_output" / "colm_output"
-)
+FINAL_TIMESTEP = 5
+PRESSURE_SATURATION_ABS_TOLERANCE = 1.0e-4
+
+reference_path = example_dir.parents[1] / "correct_output" / "colm_output"
+passed = True
+
+for field in ("perm_x", "perm_y", "perm_z"):
+    name = f"PF_CoLM_CI.out.{field}.pfb"
+    if not pf_test_file(
+        str(run_path / name),
+        str(reference_path / name),
+        f"Max difference in {name}",
+    ):
+        passed = False
+
+for timestep in range(FINAL_TIMESTEP + 1):
+    for field in ("press", "satur"):
+        name = f"PF_CoLM_CI.out.{field}.{timestep:05d}.pfb"
+        if not pf_test_file_with_abs(
+            str(run_path / name),
+            str(reference_path / name),
+            f"Max difference in {name}",
+            abs_value=PRESSURE_SATURATION_ABS_TOLERANCE,
+        ):
+            passed = False
+
+mask = read_pfb(str(run_path / "PF_CoLM_CI.out.mask.pfb"))
+top = compute_top(mask)
+write_pfb(str(run_path / "PF_CoLM_CI.out.top_index.pfb"), top)
+
+pressure = read_pfb(str(run_path / "PF_CoLM_CI.out.press.00000.pfb"))
+top_pressure = extract_top(pressure, top)
+write_pfb(str(run_path / "PF_CoLM_CI.out.top.press.00000.pfb"), top_pressure)
+
+for name in (
+    "PF_CoLM_CI.out.top_index.pfb",
+    "PF_CoLM_CI.out.top.press.00000.pfb",
+):
+    if not pf_test_file(
+        str(run_path / name),
+        str(reference_path / name),
+        f"Max difference in {name}",
+    ):
+        passed = False
+
 rm(run_dir)
 if passed:
     print(f"{runname} : PASSED")
