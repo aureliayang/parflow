@@ -33,6 +33,8 @@
 #include "hypre_dependences.h"
 void CopyParFlowVectorToHypreVectorAsBoxes(Vector *pf_vector,
                                           HYPRE_StructVector *hypre_vector);
+void CopyHypreVectorToParflowVectorAsBoxes(HYPRE_StructVector *hypre_vector,
+                                           Vector *soln);
 void HypreAssembleMatrixWithTransfer(Matrix *pf_Bmat, Matrix *pf_Cmat,
                                       HYPRE_StructMatrix *hypre_mat,
                                       ProblemData *problem_data,

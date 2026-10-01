@@ -128,7 +128,10 @@ void         PFMG(
   /* Copy solution from hypre_x vector to the soln vector. */
   BeginTiming(public_xtra->time_index_copy_hypre);
 
-  CopyHypreVectorToParflowVector(&hypre_x, soln);
+  if (public_xtra->box_transfer)
+    CopyHypreVectorToParflowVectorAsBoxes(&hypre_x, soln);
+  else
+    CopyHypreVectorToParflowVector(&hypre_x, soln);
 
   EndTiming(public_xtra->time_index_copy_hypre);
 #else

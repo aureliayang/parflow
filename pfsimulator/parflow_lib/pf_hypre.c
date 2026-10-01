@@ -161,6 +161,42 @@ void CopyHypreVectorToParflowVector(HYPRE_StructVector* hypre_x,
 }
 
 
+void CopyHypreVectorToParflowVectorAsBoxes(HYPRE_StructVector* hypre_x,
+                                           Vector *            soln)
+{
+  Grid* grid = VectorGrid(soln);
+  int sg;
+
+  ForSubgridI(sg, GridSubgrids(grid))
+  {
+    Subgrid* subgrid = SubgridArraySubgrid(GridSubgrids(grid), sg);
+    Subvector* soln_sub = VectorSubvector(soln, sg);
+
+    int ix = SubgridIX(subgrid);
+    int iy = SubgridIY(subgrid);
+    int iz = SubgridIZ(subgrid);
+    int nx = SubgridNX(subgrid);
+    int ny = SubgridNY(subgrid);
+    int nz = SubgridNZ(subgrid);
+    int ilo[3] = { ix, iy, iz };
+    int ihi[3] = { ix + nx - 1, iy + ny - 1, iz + nz - 1 };
+
+    HYPRE_Complex *values = ctalloc(HYPRE_Complex,
+                                    (size_t)nx * ny * nz);
+    HYPRE_StructVectorGetBoxValues(*hypre_x, ilo, ihi, values);
+
+    size_t offset = 0;
+    for (int k = iz; k < iz + nz; k++)
+      for (int j = iy; j < iy + ny; j++)
+        for (int i = ix; i < ix + nx; i++)
+          SubvectorData(soln_sub)[SubvectorEltIndex(soln_sub, i, j, k)] =
+            values[offset++];
+
+    tfree(values);
+  }
+}
+
+
 void HypreAssembleGrid(
                        Grid*             pf_grid,
                        HYPRE_StructGrid* hypre_grid,
