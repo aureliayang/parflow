@@ -86,6 +86,34 @@ void CopyParFlowVectorToHypreVector(Vector *            rhs,
 }
 
 
+/* Pack only owned cells: ParFlow subvectors include ghost cells. HYPRE's
+ * public box API expects contiguous values with x varying fastest. */
+void CopyParFlowVectorToHypreVectorAsBoxes(Vector *rhs,
+                                          HYPRE_StructVector *hypre_b)
+{
+  Grid *grid = VectorGrid(rhs);
+  int sg;
+  ForSubgridI(sg, GridSubgrids(grid))
+  {
+    Subgrid *subgrid = GridSubgrid(grid, sg);
+    Subvector *subvector = VectorSubvector(rhs, sg);
+    int ix = SubgridIX(subgrid), iy = SubgridIY(subgrid), iz = SubgridIZ(subgrid);
+    int nx = SubgridNX(subgrid), ny = SubgridNY(subgrid), nz = SubgridNZ(subgrid);
+    int ilo[3] = { ix, iy, iz };
+    int ihi[3] = { ix + nx - 1, iy + ny - 1, iz + nz - 1 };
+    double *source = SubvectorData(subvector);
+    double *values = ctalloc(double, (size_t)nx * ny * nz);
+    size_t offset = 0;
+    for (int k = iz; k < iz + nz; k++)
+      for (int j = iy; j < iy + ny; j++)
+        for (int i = ix; i < ix + nx; i++)
+          values[offset++] = source[SubvectorEltIndex(subvector, i, j, k)];
+    HYPRE_StructVectorSetBoxValues(*hypre_b, ilo, ihi, values);
+    tfree(values);
+  }
+  HYPRE_StructVectorAssemble(*hypre_b);
+}
+
 void CopyHypreVectorToParflowVector(HYPRE_StructVector* hypre_x,
                                     Vector *            soln)
 {
@@ -150,7 +178,7 @@ void HypreAssembleGrid(
     if (*hypre_grid)
     {
       HYPRE_StructGridDestroy(*hypre_grid);
-      hypre_grid = NULL;
+      *hypre_grid = NULL;
     }
 
     /* Set the HYPRE grid */
@@ -171,8 +199,8 @@ void HypreAssembleGrid(
       dxyz[0] = SubgridDX(subgrid);
       dxyz[1] = SubgridDY(subgrid);
       dxyz[2] = SubgridDZ(subgrid);
+      HYPRE_StructGridSetExtents(*hypre_grid, ilo, ihi);
     }
-    HYPRE_StructGridSetExtents(*hypre_grid, ilo, ihi);
     HYPRE_StructGridAssemble(*hypre_grid);
   }
 }
@@ -239,11 +267,12 @@ void HypreInitialize(Matrix*              pf_Bmat,
   HYPRE_StructVectorAssemble(*hypre_x);
 }
 
-void HypreAssembleMatrixAsElements(
+void HypreAssembleMatrixWithTransfer(
                                    Matrix *            pf_Bmat,
                                    Matrix *            pf_Cmat,
                                    HYPRE_StructMatrix* hypre_mat,
-                                   ProblemData *       problem_data
+                                   ProblemData *       problem_data,
+                                   int                 box_transfer
                                    )
 {
   Grid *mat_grid = MatrixGrid(pf_Bmat);
@@ -262,6 +291,8 @@ void HypreAssembleMatrixAsElements(
 
   double coeffs[7];
   double coeffs_symm[4];
+  double *box_values = NULL;
+  int ilo[3], ihi[3];
 
   int stencil_size = MatrixDataStencilSize(pf_Bmat);
   int symmetric = MatrixSymmetric(pf_Bmat);
@@ -310,6 +341,13 @@ void HypreAssembleMatrixAsElements(
 
       im = SubmatrixEltIndex(pfB_sub, ix, iy, iz);
 
+      if (box_transfer)
+      {
+        ilo[0] = ix; ilo[1] = iy; ilo[2] = iz;
+        ihi[0] = ix + nx - 1; ihi[1] = iy + ny - 1; ihi[2] = iz + nz - 1;
+        box_values = ctalloc(double, (size_t)nx * ny * nz * stencil_size);
+      }
+
       if (symmetric)
       {
         BoxLoopI1(i, j, k, ix, iy, iz, nx, ny, nz,
@@ -322,11 +360,19 @@ void HypreAssembleMatrixAsElements(
           index[0] = i;
           index[1] = j;
           index[2] = k;
-          HYPRE_StructMatrixSetValues(*hypre_mat,
-                                      index,
-                                      stencil_size,
-                                      stencil_indices_symm,
-                                      coeffs_symm);
+          if (box_transfer)
+          {
+            for (int entry = 0; entry < stencil_size; entry++)
+              box_values[(((size_t)(k - iz) * ny + j - iy) * nx + i - ix) * stencil_size + entry] = coeffs_symm[entry];
+          }
+          else
+          {
+            HYPRE_StructMatrixSetValues(*hypre_mat,
+                                        index,
+                                        stencil_size,
+                                        stencil_indices_symm,
+                                        coeffs_symm);
+          }
         });
       }
       else
@@ -344,11 +390,26 @@ void HypreAssembleMatrixAsElements(
           index[0] = i;
           index[1] = j;
           index[2] = k;
-          HYPRE_StructMatrixSetValues(*hypre_mat,
-                                      index,
-                                      stencil_size,
-                                      stencil_indices, coeffs);
+          if (box_transfer)
+          {
+            for (int entry = 0; entry < stencil_size; entry++)
+              box_values[(((size_t)(k - iz) * ny + j - iy) * nx + i - ix) * stencil_size + entry] = coeffs[entry];
+          }
+          else
+          {
+            HYPRE_StructMatrixSetValues(*hypre_mat,
+                                        index,
+                                        stencil_size,
+                                        stencil_indices, coeffs);
+          }
         });
+      }
+      if (box_transfer)
+      {
+        HYPRE_StructMatrixSetBoxValues(*hypre_mat, ilo, ihi, stencil_size,
+                                      symmetric ? stencil_indices_symm : stencil_indices,
+                                      box_values);
+        tfree(box_values);
       }
     }   /* End subgrid loop */
   }
@@ -415,6 +476,13 @@ void HypreAssembleMatrixAsElements(
 
       im = SubmatrixEltIndex(pfB_sub, ix, iy, iz);
 
+      if (box_transfer)
+      {
+        ilo[0] = ix; ilo[1] = iy; ilo[2] = iz;
+        ihi[0] = ix + nx - 1; ihi[1] = iy + ny - 1; ihi[2] = iz + nz - 1;
+        box_values = ctalloc(double, (size_t)nx * ny * nz * stencil_size);
+      }
+
       if (symmetric)
       {
         BoxLoopI1(i, j, k, ix, iy, iz, nx, ny, nz,
@@ -447,11 +515,19 @@ void HypreAssembleMatrixAsElements(
           index[0] = i;
           index[1] = j;
           index[2] = k;
-          HYPRE_StructMatrixSetValues(*hypre_mat,
-                                      index,
-                                      stencil_size,
-                                      stencil_indices_symm,
-                                      coeffs_symm);
+          if (box_transfer)
+          {
+            for (int entry = 0; entry < stencil_size; entry++)
+              box_values[(((size_t)(k - iz) * ny + j - iy) * nx + i - ix) * stencil_size + entry] = coeffs_symm[entry];
+          }
+          else
+          {
+            HYPRE_StructMatrixSetValues(*hypre_mat,
+                                        index,
+                                        stencil_size,
+                                        stencil_indices_symm,
+                                        coeffs_symm);
+          }
         });
       }
       else
@@ -511,16 +587,39 @@ void HypreAssembleMatrixAsElements(
           index[0] = i;
           index[1] = j;
           index[2] = k;
-          HYPRE_StructMatrixSetValues(*hypre_mat,
-                                      index,
-                                      stencil_size,
-                                      stencil_indices, coeffs);
+          if (box_transfer)
+          {
+            for (int entry = 0; entry < stencil_size; entry++)
+              box_values[(((size_t)(k - iz) * ny + j - iy) * nx + i - ix) * stencil_size + entry] = coeffs[entry];
+          }
+          else
+          {
+            HYPRE_StructMatrixSetValues(*hypre_mat,
+                                        index,
+                                        stencil_size,
+                                        stencil_indices, coeffs);
+          }
         });
+      }
+      if (box_transfer)
+      {
+        HYPRE_StructMatrixSetBoxValues(*hypre_mat, ilo, ihi, stencil_size,
+                                      symmetric ? stencil_indices_symm : stencil_indices,
+                                      box_values);
+        tfree(box_values);
       }
     }   /* End subgrid loop */
   }  /* end if pf_Cmat==NULL */
 
   HYPRE_StructMatrixAssemble(*hypre_mat);
+}
+
+/* Preserve the shared point path used by SMG and existing callers. */
+void HypreAssembleMatrixAsElements(Matrix *pf_Bmat, Matrix *pf_Cmat,
+                                   HYPRE_StructMatrix *hypre_mat,
+                                   ProblemData *problem_data)
+{
+  HypreAssembleMatrixWithTransfer(pf_Bmat, pf_Cmat, hypre_mat, problem_data, 0);
 }
 
 #endif // HAVE_HYPRE

@@ -2785,6 +2785,18 @@ Solver:
           domains:
             AnyString:
 
+        HypreTransfer:
+          help: >
+            [Type: string] For ordinary PFMG only, select Point (per-cell insertion)
+            or Box (one packed insertion per local Subgrid) for matrix and RHS
+            transfer to HYPRE. The solution return path is unchanged.
+          default: Point
+          domains:
+            EnumDomain:
+              enum_list:
+                - Point
+                - Box
+
         # only for the PFMG solver
         RAPType:
           help: >

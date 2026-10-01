@@ -44,6 +44,7 @@ typedef struct {
   int raptype;
 
   int hypre_logging;
+  int box_transfer;
 
   int time_index_pfmg;
   int time_index_copy_hypre;
@@ -88,7 +89,10 @@ void         PFMG(
   /* Copy rhs to hypre_b vector. */
   BeginTiming(public_xtra->time_index_copy_hypre);
 
-  CopyParFlowVectorToHypreVector(rhs, &hypre_b);
+  if (public_xtra->box_transfer)
+    CopyParFlowVectorToHypreVectorAsBoxes(rhs, &hypre_b);
+  else
+    CopyParFlowVectorToHypreVector(rhs, &hypre_b);
 
   EndTiming(public_xtra->time_index_copy_hypre);
 
@@ -189,10 +193,10 @@ PFModule  *PFMGInitInstanceXtra(
     /* Copy the matrix entries */
     BeginTiming(public_xtra->time_index_copy_hypre);
 
-    HypreAssembleMatrixAsElements(pf_Bmat,
+    HypreAssembleMatrixWithTransfer(pf_Bmat,
                                   pf_Cmat,
                                   &(instance_xtra->hypre_mat),
-                                  problem_data);
+                                  problem_data, public_xtra->box_transfer);
 
     EndTiming(public_xtra->time_index_copy_hypre);
 
@@ -287,6 +291,13 @@ PFModule  *PFMGNewPublicXtra(char *name)
   NameArray raptype_switch_na;
 
   public_xtra = ctalloc(PublicXtra, 1);
+  {
+    NameArray transfer_names = NA_NewNameArray("Point Box");
+    sprintf(key, "%s.HypreTransfer", name);
+    char *transfer = GetStringDefault(key, "Point");
+    public_xtra->box_transfer = NA_NameToIndexExitOnError(transfer_names, transfer, key);
+    NA_FreeNameArray(transfer_names);
+  }
 
   sprintf(key, "%s.MaxIter", name);
   public_xtra->max_iter = GetIntDefault(key, 1);
@@ -359,4 +370,3 @@ int  PFMGSizeOfTempData()
 {
   return 0;
 }
-
