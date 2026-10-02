@@ -185,9 +185,47 @@ void CopyParFlowVectorToHypreVector(Vector *            rhs,
 
 /* Pack only owned cells: ParFlow subvectors include ghost cells. HYPRE's
  * public box API expects contiguous values with x varying fastest. */
+static int HypreDirectVectorEnabled(void)
+{
+  const char *env = getenv("PARFLOW_HYPRE_DIRECT_VECTOR");
+  return env && atoi(env) != 0;
+}
+
 void CopyParFlowVectorToHypreVectorAsBoxes(Vector *rhs,
                                           HYPRE_StructVector *hypre_b)
 {
+  if (HypreDirectVectorEnabled())
+  {
+    Grid *grid = VectorGrid(rhs);
+    int sg, i, j, k;
+    ForSubgridI(sg, GridSubgrids(grid))
+    {
+      Subgrid *subgrid = GridSubgrid(grid, sg);
+      Subvector *subvector = VectorSubvector(rhs, sg);
+      int ix = SubgridIX(subgrid), iy = SubgridIY(subgrid), iz = SubgridIZ(subgrid);
+      int nx = SubgridNX(subgrid), ny = SubgridNY(subgrid), nz = SubgridNZ(subgrid);
+      int nx_v = SubvectorNX(subvector), ny_v = SubvectorNY(subvector), nz_v = SubvectorNZ(subvector);
+      int source_index = SubvectorEltIndex(subvector, ix, iy, iz);
+      int hx0 = hypre_BoxIMinD(hypre_StructVectorBoxDataBox(*hypre_b, sg), 0);
+      int hy0 = hypre_BoxIMinD(hypre_StructVectorBoxDataBox(*hypre_b, sg), 1);
+      int hz0 = hypre_BoxIMinD(hypre_StructVectorBoxDataBox(*hypre_b, sg), 2);
+      int hnx = hypre_BoxSizeX(hypre_StructVectorBoxDataBox(*hypre_b, sg));
+      int hny = hypre_BoxSizeY(hypre_StructVectorBoxDataBox(*hypre_b, sg));
+      int target_index = ((iz - hz0) * hny + (iy - hy0)) * hnx + (ix - hx0);
+      double *source = SubvectorData(subvector);
+      HYPRE_Complex *target = hypre_StructVectorBoxData(*hypre_b, sg);
+      BeginTiming(HypreTimingRhsPack);
+      BoxLoopI2(i, j, k, ix, iy, iz, nx, ny, nz,
+                source_index, nx_v, ny_v, nz_v, 1, 1, 1,
+                target_index, hnx, hny, hnx * hny, 1, 1, 1,
+      {
+        target[target_index] = source[source_index];
+      });
+      EndTiming(HypreTimingRhsPack);
+    }
+    HYPRE_StructVectorAssemble(*hypre_b);
+    return;
+  }
   Grid *grid = VectorGrid(rhs);
   int sg;
   int i, j, k;
@@ -276,6 +314,35 @@ void CopyHypreVectorToParflowVector(HYPRE_StructVector* hypre_x,
 void CopyHypreVectorToParflowVectorAsBoxes(HYPRE_StructVector* hypre_x,
                                            Vector *            soln)
 {
+  if (HypreDirectVectorEnabled())
+  {
+    Grid *grid = VectorGrid(soln);
+    int sg, i, j, k;
+    ForSubgridI(sg, GridSubgrids(grid))
+    {
+      Subgrid *subgrid = SubgridArraySubgrid(GridSubgrids(grid), sg);
+      Subvector *soln_sub = VectorSubvector(soln, sg);
+      int ix = SubgridIX(subgrid), iy = SubgridIY(subgrid), iz = SubgridIZ(subgrid);
+      int nx = SubgridNX(subgrid), ny = SubgridNY(subgrid), nz = SubgridNZ(subgrid);
+      int nx_v = SubvectorNX(soln_sub), ny_v = SubvectorNY(soln_sub), nz_v = SubvectorNZ(soln_sub);
+      int destination_index = SubvectorEltIndex(soln_sub, ix, iy, iz);
+      hypre_Box *hbox = hypre_StructVectorBoxDataBox(*hypre_x, sg);
+      int hx0 = hypre_BoxIMinD(hbox, 0), hy0 = hypre_BoxIMinD(hbox, 1), hz0 = hypre_BoxIMinD(hbox, 2);
+      int hnx = hypre_BoxSizeX(hbox), hny = hypre_BoxSizeY(hbox);
+      int source_index = ((iz - hz0) * hny + (iy - hy0)) * hnx + (ix - hx0);
+      HYPRE_Complex *source = hypre_StructVectorBoxData(*hypre_x, sg);
+      double *destination = SubvectorData(soln_sub);
+      BeginTiming(HypreTimingSolutionUnpack);
+      BoxLoopI2(i, j, k, ix, iy, iz, nx, ny, nz,
+                source_index, hnx, hny, hnx * hny, 1, 1, 1,
+                destination_index, nx_v, ny_v, nz_v, 1, 1, 1,
+      {
+        destination[destination_index] = source[source_index];
+      });
+      EndTiming(HypreTimingSolutionUnpack);
+    }
+    return;
+  }
   Grid* grid = VectorGrid(soln);
   int sg;
   int i, j, k;
