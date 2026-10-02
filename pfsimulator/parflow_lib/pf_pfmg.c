@@ -197,9 +197,9 @@ PFModule  *PFMGInitInstanceXtra(
     BeginTiming(public_xtra->time_index_copy_hypre);
 
     HypreAssembleMatrixWithTransfer(pf_Bmat,
-                                  pf_Cmat,
-                                  &(instance_xtra->hypre_mat),
-                                  problem_data, public_xtra->box_transfer);
+                                    pf_Cmat,
+                                    &(instance_xtra->hypre_mat),
+                                    problem_data, public_xtra->box_transfer);
 
     EndTiming(public_xtra->time_index_copy_hypre);
 

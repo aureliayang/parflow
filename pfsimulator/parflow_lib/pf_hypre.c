@@ -43,6 +43,7 @@ static void *HypreManagedAlloc(size_t bytes)
 {
   void *ptr = NULL;
   cudaError_t err = cudaMallocManaged(&ptr, bytes, cudaMemAttachGlobal);
+
   if (err != cudaSuccess)
   {
     fprintf(stderr, "ParFlow-HYPRE managed allocation failed: %s\n", cudaGetErrorString(err));
@@ -63,8 +64,8 @@ static void HypreManagedFree(void *ptr)
     }
   }
 }
-#define HYPRE_PF_ALLOC(type, count) ((type *) HypreManagedAlloc(sizeof(type) * (size_t)(count)))
-#define HYPRE_PF_FREE(ptr) HypreManagedFree((void *) (ptr))
+#define HYPRE_PF_ALLOC(type, count) ((type *)HypreManagedAlloc(sizeof(type) * (size_t)(count)))
+#define HYPRE_PF_FREE(ptr) HypreManagedFree((void *)(ptr))
 #else
 #define HYPRE_PF_ALLOC(type, count) ctalloc_amps(type, count)
 #define HYPRE_PF_FREE(ptr) tfree_amps(ptr)
@@ -90,6 +91,7 @@ static void *HypreBoxTransferBuffer(size_t bytes)
 static void ConfigureHypreCudaMemory(void)
 {
   static int configured = 0;
+
   if (!configured)
   {
     HYPRE_Initialize();
@@ -113,6 +115,7 @@ int HypreTimingPFMGSetup = 0;
 void HypreRegisterTransferTiming(void)
 {
   static int registered = 0;
+
   if (!registered)
   {
     HypreTimingRhsPack = RegisterTiming("HYPRE_RHS_Pack");
@@ -189,6 +192,7 @@ void CopyParFlowVectorToHypreVector(Vector *            rhs,
 static int HypreDirectVectorEnabled(void)
 {
   const char *env = getenv("PARFLOW_HYPRE_DIRECT_VECTOR");
+
   return env && atoi(env) != 0;
 }
 
@@ -197,6 +201,7 @@ static int HypreDirectVectorEnabled(void)
 static int HypreBoxValues2Enabled(void)
 {
   const char *env = getenv("PARFLOW_HYPRE_BOX_VALUES2");
+
   return env && atoi(env) != 0;
 }
 
@@ -206,11 +211,12 @@ static int HypreBoxValues2Enabled(void)
 static int HypreDirectMatrixEnabled(void)
 {
   const char *env = getenv("PARFLOW_HYPRE_DIRECT_MATRIX");
+
   return env && atoi(env) != 0;
 }
 
-void CopyParFlowVectorToHypreVectorAsBoxes(Vector *rhs,
-                                          HYPRE_StructVector *hypre_b)
+void CopyParFlowVectorToHypreVectorAsBoxes(Vector *            rhs,
+                                           HYPRE_StructVector *hypre_b)
 {
   if (HypreDirectVectorEnabled())
   {
@@ -224,17 +230,19 @@ void CopyParFlowVectorToHypreVectorAsBoxes(Vector *rhs,
       int nx = SubgridNX(subgrid), ny = SubgridNY(subgrid), nz = SubgridNZ(subgrid);
       int nx_v = SubvectorNX(subvector), ny_v = SubvectorNY(subvector), nz_v = SubvectorNZ(subvector);
       int source_index = SubvectorEltIndex(subvector, ix, iy, iz);
-      int hx0 = hypre_BoxIMinD(hypre_StructVectorBoxDataBox(*hypre_b, sg), 0);
-      int hy0 = hypre_BoxIMinD(hypre_StructVectorBoxDataBox(*hypre_b, sg), 1);
-      int hz0 = hypre_BoxIMinD(hypre_StructVectorBoxDataBox(*hypre_b, sg), 2);
-      int hnx = hypre_BoxSizeX(hypre_StructVectorBoxDataBox(*hypre_b, sg));
-      int hny = hypre_BoxSizeY(hypre_StructVectorBoxDataBox(*hypre_b, sg));
+      hypre_Box *hbox = hypre_BoxArrayBox(hypre_StructVectorDataSpace(*hypre_b), sg);
+      int hx0 = hypre_BoxIMinD(hbox, 0);
+      int hy0 = hypre_BoxIMinD(hbox, 1);
+      int hz0 = hypre_BoxIMinD(hbox, 2);
+      int hnx = hypre_BoxSizeX(hbox);
+      int hny = hypre_BoxSizeY(hbox);
       int target_index = ((iz - hz0) * hny + (iy - hy0)) * hnx + (ix - hx0);
       double *source = SubvectorData(subvector);
       HYPRE_Complex *target = hypre_StructVectorBoxData(*hypre_b, sg);
+
       BeginTiming(HypreTimingRhsPack);
 #ifdef PARFLOW_HAVE_CUDA
-      HypreCudaDirectVectorCopy(source, (double *) target, source_index,
+      HypreCudaDirectVectorCopy(source, (double *)target, source_index,
                                 nx_v, ny_v, target_index, hnx, hny,
                                 nx, ny, nz);
 #else
@@ -265,6 +273,7 @@ void CopyParFlowVectorToHypreVectorAsBoxes(Vector *rhs,
     int ilo[3] = { ix, iy, iz };
     int ihi[3] = { ix + nx - 1, iy + ny - 1, iz + nz - 1 };
     double *source = SubvectorData(subvector);
+
     if (HypreBoxValues2Enabled())
     {
       int vilower[3] = { SubvectorIX(subvector), SubvectorIY(subvector),
@@ -273,12 +282,12 @@ void CopyParFlowVectorToHypreVectorAsBoxes(Vector *rhs,
                          vilower[2] + nz_v - 1 };
       BeginTiming(HypreTimingRhsSetBox);
       HYPRE_StructVectorSetBoxValues2(*hypre_b, ilo, ihi, vilower, viupper,
-                                      (HYPRE_Complex *) source);
+                                      (HYPRE_Complex *)source);
       EndTiming(HypreTimingRhsSetBox);
       continue;
     }
-    double *values = (double *) HypreBoxTransferBuffer(sizeof(double) *
-                                                        (size_t)nx * ny * nz);
+    double *values = (double *)HypreBoxTransferBuffer(sizeof(double) *
+                                                      (size_t)nx * ny * nz);
     int source_index = SubvectorEltIndex(subvector, ix, iy, iz);
     int values_index = 0;
 
@@ -367,15 +376,16 @@ void CopyHypreVectorToParflowVectorAsBoxes(HYPRE_StructVector* hypre_x,
       int nx = SubgridNX(subgrid), ny = SubgridNY(subgrid), nz = SubgridNZ(subgrid);
       int nx_v = SubvectorNX(soln_sub), ny_v = SubvectorNY(soln_sub), nz_v = SubvectorNZ(soln_sub);
       int destination_index = SubvectorEltIndex(soln_sub, ix, iy, iz);
-      hypre_Box *hbox = hypre_StructVectorBoxDataBox(*hypre_x, sg);
+      hypre_Box *hbox = hypre_BoxArrayBox(hypre_StructVectorDataSpace(*hypre_x), sg);
       int hx0 = hypre_BoxIMinD(hbox, 0), hy0 = hypre_BoxIMinD(hbox, 1), hz0 = hypre_BoxIMinD(hbox, 2);
       int hnx = hypre_BoxSizeX(hbox), hny = hypre_BoxSizeY(hbox);
       int source_index = ((iz - hz0) * hny + (iy - hy0)) * hnx + (ix - hx0);
       HYPRE_Complex *source = hypre_StructVectorBoxData(*hypre_x, sg);
       double *destination = SubvectorData(soln_sub);
+
       BeginTiming(HypreTimingSolutionUnpack);
 #ifdef PARFLOW_HAVE_CUDA
-      HypreCudaDirectVectorCopy((const double *) source, destination,
+      HypreCudaDirectVectorCopy((const double *)source, destination,
                                 source_index, hnx, hny, destination_index,
                                 nx_v, ny_v, nx, ny, nz);
 #else
@@ -412,6 +422,7 @@ void CopyHypreVectorToParflowVectorAsBoxes(HYPRE_StructVector* hypre_x,
     int ihi[3] = { ix + nx - 1, iy + ny - 1, iz + nz - 1 };
 
     double *destination = SubvectorData(soln_sub);
+
     if (HypreBoxValues2Enabled())
     {
       int vilower[3] = { SubvectorIX(soln_sub), SubvectorIY(soln_sub),
@@ -420,13 +431,13 @@ void CopyHypreVectorToParflowVectorAsBoxes(HYPRE_StructVector* hypre_x,
                          vilower[2] + nz_v - 1 };
       BeginTiming(HypreTimingSolutionGetBox);
       HYPRE_StructVectorGetBoxValues2(*hypre_x, ilo, ihi, vilower, viupper,
-                                      (HYPRE_Complex *) destination);
+                                      (HYPRE_Complex *)destination);
       EndTiming(HypreTimingSolutionGetBox);
       continue;
     }
-    HYPRE_Complex *values = (HYPRE_Complex *) HypreBoxTransferBuffer(
-                                        sizeof(HYPRE_Complex) *
-                                        (size_t)nx * ny * nz);
+    HYPRE_Complex *values = (HYPRE_Complex *)HypreBoxTransferBuffer(
+                                                                    sizeof(HYPRE_Complex) *
+                                                                    (size_t)nx * ny * nz);
     BeginTiming(HypreTimingSolutionGetBox);
     HYPRE_StructVectorGetBoxValues(*hypre_x, ilo, ihi, values);
     EndTiming(HypreTimingSolutionGetBox);
@@ -451,7 +462,6 @@ void CopyHypreVectorToParflowVectorAsBoxes(HYPRE_StructVector* hypre_x,
     });
 #endif
     EndTiming(HypreTimingSolutionUnpack);
-
   }
 }
 
@@ -564,12 +574,12 @@ void HypreInitialize(Matrix*              pf_Bmat,
 }
 
 void HypreAssembleMatrixWithTransfer(
-                                   Matrix *            pf_Bmat,
-                                   Matrix *            pf_Cmat,
-                                   HYPRE_StructMatrix* hypre_mat,
-                                   ProblemData *       problem_data,
-                                   int                 box_transfer
-                                   )
+                                     Matrix *            pf_Bmat,
+                                     Matrix *            pf_Cmat,
+                                     HYPRE_StructMatrix* hypre_mat,
+                                     ProblemData *       problem_data,
+                                     int                 box_transfer
+                                     )
 {
   Grid *mat_grid = MatrixGrid(pf_Bmat);
   double *cp, *wp = NULL, *ep, *sop = NULL, *np, *lp = NULL, *up = NULL;
@@ -647,7 +657,7 @@ void HypreAssembleMatrixWithTransfer(
         ihi[0] = ix + nx - 1; ihi[1] = iy + ny - 1; ihi[2] = iz + nz - 1;
         if (matrix_direct)
         {
-          hypre_Box *matrix_box = hypre_StructMatrixBoxDataBox(*hypre_mat, sg);
+          hypre_Box *matrix_box = hypre_BoxArrayBox(hypre_StructMatrixDataSpace(*hypre_mat), sg);
           matrix_hx0 = hypre_BoxIMinD(matrix_box, 0);
           matrix_hy0 = hypre_BoxIMinD(matrix_box, 1);
           matrix_hz0 = hypre_BoxIMinD(matrix_box, 2);
@@ -661,8 +671,8 @@ void HypreAssembleMatrixWithTransfer(
         }
         else
         {
-          box_values = (double *) HypreBoxTransferBuffer(
-            sizeof(double) * (size_t)nx * ny * nz * stencil_size);
+          box_values = (double *)HypreBoxTransferBuffer(
+                                                        sizeof(double) * (size_t)nx * ny * nz * stencil_size);
         }
       }
 
@@ -673,23 +683,23 @@ void HypreAssembleMatrixWithTransfer(
       {
         BeginTiming(HypreTimingMatrixPack);
         HypreCudaDirectMatrixBoxValues(
-            cp, wp, ep, sop, np, lp, up, NULL, NULL, NULL, NULL, NULL, NULL,
-            (double *)matrix_data[0], (double *)matrix_data[1],
-            (double *)matrix_data[2], (double *)matrix_data[3],
-            (double *)matrix_data[4], (double *)matrix_data[5],
-            (double *)matrix_data[6], im, nx_m, ny_m, 0, 0, 0, 0, iz, ix, iy,
-            matrix_hx0, matrix_hy0, matrix_hz0, matrix_hnx, matrix_hny,
-            nx, ny, nz, stencil_size, symmetric, 0);
+                                       cp, wp, ep, sop, np, lp, up, NULL, NULL, NULL, NULL, NULL, NULL,
+                                       (double *)matrix_data[0], (double *)matrix_data[1],
+                                       (double *)matrix_data[2], (double *)matrix_data[3],
+                                       (double *)matrix_data[4], (double *)matrix_data[5],
+                                       (double *)matrix_data[6], im, nx_m, ny_m, 0, 0, 0, 0, iz, ix, iy,
+                                       matrix_hx0, matrix_hy0, matrix_hz0, matrix_hnx, matrix_hny,
+                                       nx, ny, nz, stencil_size, symmetric, 0);
         EndTiming(HypreTimingMatrixPack);
       }
       else if (matrix_pack_cuda)
       {
         BeginTiming(HypreTimingMatrixPack);
         HypreCudaPackMatrixBoxValues(
-            cp, wp, ep, sop, np, lp, up,
-            NULL, NULL, NULL, NULL, NULL, NULL, box_values,
-            im, nx_m, ny_m, 0, 0, 0, 0, 0, 0,
-            nx, ny, nz, stencil_size, symmetric, 0);
+                                     cp, wp, ep, sop, np, lp, up,
+                                     NULL, NULL, NULL, NULL, NULL, NULL, box_values,
+                                     im, nx_m, ny_m, 0, 0, 0, 0, 0, 0,
+                                     nx, ny, nz, stencil_size, symmetric, 0);
         EndTiming(HypreTimingMatrixPack);
       }
       else
@@ -697,83 +707,83 @@ void HypreAssembleMatrixWithTransfer(
       {
         if (box_transfer)
           BeginTiming(HypreTimingMatrixPack);
-      if (symmetric)
-      {
-        BoxLoopI1(i, j, k, ix, iy, iz, nx, ny, nz,
-                  im, nx_m, ny_m, nz_m, 1, 1, 1,
+        if (symmetric)
         {
-          coeffs_symm[0] = cp[im];
-          coeffs_symm[1] = ep[im];
-          coeffs_symm[2] = np[im];
-          coeffs_symm[3] = up[im];
-          index[0] = i;
-          index[1] = j;
-          index[2] = k;
-          if (matrix_direct)
+          BoxLoopI1(i, j, k, ix, iy, iz, nx, ny, nz,
+                    im, nx_m, ny_m, nz_m, 1, 1, 1,
           {
-            int matrix_index = ((k - matrix_hz0) * matrix_hny + (j - matrix_hy0)) * matrix_hnx + (i - matrix_hx0);
-            for (int entry = 0; entry < stencil_size; entry++)
-              matrix_data[entry][matrix_index] = coeffs_symm[entry];
-          }
-          else if (box_transfer)
-          {
-            for (int entry = 0; entry < stencil_size; entry++)
-              box_values[(((size_t)(k - iz) * ny + j - iy) * nx + i - ix) * stencil_size + entry] = coeffs_symm[entry];
-          }
-          else
-          {
-            HYPRE_StructMatrixSetValues(*hypre_mat,
-                                        index,
-                                        stencil_size,
-                                        stencil_indices_symm,
-                                        coeffs_symm);
-          }
-        });
-      }
-      else
-      {
-        BoxLoopI1(i, j, k, ix, iy, iz, nx, ny, nz,
-                  im, nx_m, ny_m, nz_m, 1, 1, 1,
+            coeffs_symm[0] = cp[im];
+            coeffs_symm[1] = ep[im];
+            coeffs_symm[2] = np[im];
+            coeffs_symm[3] = up[im];
+            index[0] = i;
+            index[1] = j;
+            index[2] = k;
+            if (matrix_direct)
+            {
+              int matrix_index = ((k - matrix_hz0) * matrix_hny + (j - matrix_hy0)) * matrix_hnx + (i - matrix_hx0);
+              for (int entry = 0; entry < stencil_size; entry++)
+                matrix_data[entry][matrix_index] = coeffs_symm[entry];
+            }
+            else if (box_transfer)
+            {
+              for (int entry = 0; entry < stencil_size; entry++)
+                box_values[(((size_t)(k - iz) * ny + j - iy) * nx + i - ix) * stencil_size + entry] = coeffs_symm[entry];
+            }
+            else
+            {
+              HYPRE_StructMatrixSetValues(*hypre_mat,
+                                          index,
+                                          stencil_size,
+                                          stencil_indices_symm,
+                                          coeffs_symm);
+            }
+          });
+        }
+        else
         {
-          coeffs[0] = cp[im];
-          coeffs[1] = wp[im];
-          coeffs[2] = ep[im];
-          coeffs[3] = sop[im];
-          coeffs[4] = np[im];
-          coeffs[5] = lp[im];
-          coeffs[6] = up[im];
-          index[0] = i;
-          index[1] = j;
-          index[2] = k;
-          if (matrix_direct)
+          BoxLoopI1(i, j, k, ix, iy, iz, nx, ny, nz,
+                    im, nx_m, ny_m, nz_m, 1, 1, 1,
           {
-            int matrix_index = ((k - matrix_hz0) * matrix_hny + (j - matrix_hy0)) * matrix_hnx + (i - matrix_hx0);
-            for (int entry = 0; entry < stencil_size; entry++)
-              matrix_data[entry][matrix_index] = coeffs[entry];
-          }
-          else if (box_transfer)
-          {
-            for (int entry = 0; entry < stencil_size; entry++)
-              box_values[(((size_t)(k - iz) * ny + j - iy) * nx + i - ix) * stencil_size + entry] = coeffs[entry];
-          }
-          else
-          {
-            HYPRE_StructMatrixSetValues(*hypre_mat,
-                                        index,
-                                        stencil_size,
-                                        stencil_indices, coeffs);
-          }
-        });
-      }
-      if (box_transfer)
-        EndTiming(HypreTimingMatrixPack);
+            coeffs[0] = cp[im];
+            coeffs[1] = wp[im];
+            coeffs[2] = ep[im];
+            coeffs[3] = sop[im];
+            coeffs[4] = np[im];
+            coeffs[5] = lp[im];
+            coeffs[6] = up[im];
+            index[0] = i;
+            index[1] = j;
+            index[2] = k;
+            if (matrix_direct)
+            {
+              int matrix_index = ((k - matrix_hz0) * matrix_hny + (j - matrix_hy0)) * matrix_hnx + (i - matrix_hx0);
+              for (int entry = 0; entry < stencil_size; entry++)
+                matrix_data[entry][matrix_index] = coeffs[entry];
+            }
+            else if (box_transfer)
+            {
+              for (int entry = 0; entry < stencil_size; entry++)
+                box_values[(((size_t)(k - iz) * ny + j - iy) * nx + i - ix) * stencil_size + entry] = coeffs[entry];
+            }
+            else
+            {
+              HYPRE_StructMatrixSetValues(*hypre_mat,
+                                          index,
+                                          stencil_size,
+                                          stencil_indices, coeffs);
+            }
+          });
+        }
+        if (box_transfer)
+          EndTiming(HypreTimingMatrixPack);
       }
       if (box_transfer && !matrix_direct)
       {
         BeginTiming(HypreTimingMatrixSetBox);
         HYPRE_StructMatrixSetBoxValues(*hypre_mat, ilo, ihi, stencil_size,
-                                      symmetric ? stencil_indices_symm : stencil_indices,
-                                      box_values);
+                                       symmetric ? stencil_indices_symm : stencil_indices,
+                                       box_values);
         EndTiming(HypreTimingMatrixSetBox);
       }
     }   /* End subgrid loop */
@@ -847,7 +857,7 @@ void HypreAssembleMatrixWithTransfer(
         ihi[0] = ix + nx - 1; ihi[1] = iy + ny - 1; ihi[2] = iz + nz - 1;
         if (matrix_direct)
         {
-          hypre_Box *matrix_box = hypre_StructMatrixBoxDataBox(*hypre_mat, sg);
+          hypre_Box *matrix_box = hypre_BoxArrayBox(hypre_StructMatrixDataSpace(*hypre_mat), sg);
           matrix_hx0 = hypre_BoxIMinD(matrix_box, 0);
           matrix_hy0 = hypre_BoxIMinD(matrix_box, 1);
           matrix_hz0 = hypre_BoxIMinD(matrix_box, 2);
@@ -861,8 +871,8 @@ void HypreAssembleMatrixWithTransfer(
         }
         else
         {
-          box_values = (double *) HypreBoxTransferBuffer(
-            sizeof(double) * (size_t)nx * ny * nz * stencil_size);
+          box_values = (double *)HypreBoxTransferBuffer(
+                                                        sizeof(double) * (size_t)nx * ny * nz * stencil_size);
         }
       }
 
@@ -873,28 +883,28 @@ void HypreAssembleMatrixWithTransfer(
       {
         BeginTiming(HypreTimingMatrixPack);
         HypreCudaDirectMatrixBoxValues(
-            cp, wp, ep, sop, np, lp, up, cp_c, wp_c, ep_c, sop_c, np_c, top_dat,
-            (double *)matrix_data[0], (double *)matrix_data[1],
-            (double *)matrix_data[2], (double *)matrix_data[3],
-            (double *)matrix_data[4], (double *)matrix_data[5],
-            (double *)matrix_data[6], im, nx_m, ny_m,
-            SubmatrixEltIndex(pfC_sub, ix, iy, iz), SubmatrixNX(pfC_sub),
-            SubvectorEltIndex(top_sub, ix, iy, 0), SubvectorNX(top_sub), iz,
-            ix, iy, matrix_hx0, matrix_hy0, matrix_hz0, matrix_hnx, matrix_hny,
-            nx, ny, nz, stencil_size, symmetric, 1);
+                                       cp, wp, ep, sop, np, lp, up, cp_c, wp_c, ep_c, sop_c, np_c, top_dat,
+                                       (double *)matrix_data[0], (double *)matrix_data[1],
+                                       (double *)matrix_data[2], (double *)matrix_data[3],
+                                       (double *)matrix_data[4], (double *)matrix_data[5],
+                                       (double *)matrix_data[6], im, nx_m, ny_m,
+                                       SubmatrixEltIndex(pfC_sub, ix, iy, iz), SubmatrixNX(pfC_sub),
+                                       SubvectorEltIndex(top_sub, ix, iy, 0), SubvectorNX(top_sub), iz,
+                                       ix, iy, matrix_hx0, matrix_hy0, matrix_hz0, matrix_hnx, matrix_hny,
+                                       nx, ny, nz, stencil_size, symmetric, 1);
         EndTiming(HypreTimingMatrixPack);
       }
       else if (matrix_pack_cuda)
       {
         BeginTiming(HypreTimingMatrixPack);
         HypreCudaPackMatrixBoxValues(
-            cp, wp, ep, sop, np, lp, up,
-            cp_c, wp_c, ep_c, sop_c, np_c, top_dat, box_values,
-            im, nx_m, ny_m,
-            SubmatrixEltIndex(pfC_sub, ix, iy, iz),
-            SubmatrixNX(pfC_sub), SubmatrixNY(pfC_sub),
-            SubvectorEltIndex(top_sub, ix, iy, 0), SubvectorNX(top_sub), iz,
-            nx, ny, nz, stencil_size, symmetric, 1);
+                                     cp, wp, ep, sop, np, lp, up,
+                                     cp_c, wp_c, ep_c, sop_c, np_c, top_dat, box_values,
+                                     im, nx_m, ny_m,
+                                     SubmatrixEltIndex(pfC_sub, ix, iy, iz),
+                                     SubmatrixNX(pfC_sub), SubmatrixNY(pfC_sub),
+                                     SubvectorEltIndex(top_sub, ix, iy, 0), SubvectorNX(top_sub), iz,
+                                     nx, ny, nz, stencil_size, symmetric, 1);
         EndTiming(HypreTimingMatrixPack);
       }
       else
@@ -902,145 +912,145 @@ void HypreAssembleMatrixWithTransfer(
       {
         if (box_transfer)
           BeginTiming(HypreTimingMatrixPack);
-      if (symmetric)
-      {
-        BoxLoopI1(i, j, k, ix, iy, iz, nx, ny, nz,
-                  im, nx_m, ny_m, nz_m, 1, 1, 1,
+        if (symmetric)
         {
-          itop = SubvectorEltIndex(top_sub, i, j, 0);
-          ktop = (int)top_dat[itop];
-          io = SubmatrixEltIndex(pfC_sub, i, j, iz);
-          /* Since we are using a boxloop, we need to check for top index
-           * to update with the surface contributions */
-          if (ktop == k)
+          BoxLoopI1(i, j, k, ix, iy, iz, nx, ny, nz,
+                    im, nx_m, ny_m, nz_m, 1, 1, 1,
           {
-            /* update diagonal coeff */
-            coeffs_symm[0] = cp_c[io];               //cp[im] is zero
-            /* update east coeff */
-            coeffs_symm[1] = ep[im];
-            /* update north coeff */
-            coeffs_symm[2] = np[im];
-            /* update upper coeff */
-            coeffs_symm[3] = up[im];               // JB keeps upper term on surface. This should be zero
-          }
-          else
-          {
-            coeffs_symm[0] = cp[im];
-            coeffs_symm[1] = ep[im];
-            coeffs_symm[2] = np[im];
-            coeffs_symm[3] = up[im];
-          }
-
-          index[0] = i;
-          index[1] = j;
-          index[2] = k;
-          if (matrix_direct)
-          {
-            int matrix_index = ((k - matrix_hz0) * matrix_hny + (j - matrix_hy0)) * matrix_hnx + (i - matrix_hx0);
-            for (int entry = 0; entry < stencil_size; entry++)
-              matrix_data[entry][matrix_index] = coeffs_symm[entry];
-          }
-          else if (box_transfer)
-          {
-            for (int entry = 0; entry < stencil_size; entry++)
-              box_values[(((size_t)(k - iz) * ny + j - iy) * nx + i - ix) * stencil_size + entry] = coeffs_symm[entry];
-          }
-          else
-          {
-            HYPRE_StructMatrixSetValues(*hypre_mat,
-                                        index,
-                                        stencil_size,
-                                        stencil_indices_symm,
-                                        coeffs_symm);
-          }
-        });
-      }
-      else
-      {
-        BoxLoopI1(i, j, k, ix, iy, iz, nx, ny, nz,
-                  im, nx_m, ny_m, nz_m, 1, 1, 1,
-        {
-          itop = SubvectorEltIndex(top_sub, i, j, 0);
-          ktop = (int)top_dat[itop];
-          io = SubmatrixEltIndex(pfC_sub, i, j, iz);
-          /* Since we are using a boxloop, we need to check for top index
-           * to update with the surface contributions */
-          if (ktop == k)
-          {
-            /* update diagonal coeff */
-            coeffs[0] = cp_c[io];               //cp[im] is zero
-            /* update west coeff */
-            k1 = (int)top_dat[itop - 1];
-            if (k1 == ktop)
-              coeffs[1] = wp_c[io];                  //wp[im] is zero
+            itop = SubvectorEltIndex(top_sub, i, j, 0);
+            ktop = (int)top_dat[itop];
+            io = SubmatrixEltIndex(pfC_sub, i, j, iz);
+            /* Since we are using a boxloop, we need to check for top index
+             * to update with the surface contributions */
+            if (ktop == k)
+            {
+              /* update diagonal coeff */
+              coeffs_symm[0] = cp_c[io];             //cp[im] is zero
+              /* update east coeff */
+              coeffs_symm[1] = ep[im];
+              /* update north coeff */
+              coeffs_symm[2] = np[im];
+              /* update upper coeff */
+              coeffs_symm[3] = up[im];             // JB keeps upper term on surface. This should be zero
+            }
             else
+            {
+              coeffs_symm[0] = cp[im];
+              coeffs_symm[1] = ep[im];
+              coeffs_symm[2] = np[im];
+              coeffs_symm[3] = up[im];
+            }
+
+            index[0] = i;
+            index[1] = j;
+            index[2] = k;
+            if (matrix_direct)
+            {
+              int matrix_index = ((k - matrix_hz0) * matrix_hny + (j - matrix_hy0)) * matrix_hnx + (i - matrix_hx0);
+              for (int entry = 0; entry < stencil_size; entry++)
+                matrix_data[entry][matrix_index] = coeffs_symm[entry];
+            }
+            else if (box_transfer)
+            {
+              for (int entry = 0; entry < stencil_size; entry++)
+                box_values[(((size_t)(k - iz) * ny + j - iy) * nx + i - ix) * stencil_size + entry] = coeffs_symm[entry];
+            }
+            else
+            {
+              HYPRE_StructMatrixSetValues(*hypre_mat,
+                                          index,
+                                          stencil_size,
+                                          stencil_indices_symm,
+                                          coeffs_symm);
+            }
+          });
+        }
+        else
+        {
+          BoxLoopI1(i, j, k, ix, iy, iz, nx, ny, nz,
+                    im, nx_m, ny_m, nz_m, 1, 1, 1,
+          {
+            itop = SubvectorEltIndex(top_sub, i, j, 0);
+            ktop = (int)top_dat[itop];
+            io = SubmatrixEltIndex(pfC_sub, i, j, iz);
+            /* Since we are using a boxloop, we need to check for top index
+             * to update with the surface contributions */
+            if (ktop == k)
+            {
+              /* update diagonal coeff */
+              coeffs[0] = cp_c[io];             //cp[im] is zero
+              /* update west coeff */
+              k1 = (int)top_dat[itop - 1];
+              if (k1 == ktop)
+                coeffs[1] = wp_c[io];                //wp[im] is zero
+              else
+                coeffs[1] = wp[im];
+              /* update east coeff */
+              k1 = (int)top_dat[itop + 1];
+              if (k1 == ktop)
+                coeffs[2] = ep_c[io];                //ep[im] is zero
+              else
+                coeffs[2] = ep[im];
+              /* update south coeff */
+              k1 = (int)top_dat[itop - sy_v];
+              if (k1 == ktop)
+                coeffs[3] = sop_c[io];                //sop[im] is zero
+              else
+                coeffs[3] = sop[im];
+              /* update north coeff */
+              k1 = (int)top_dat[itop + sy_v];
+              if (k1 == ktop)
+                coeffs[4] = np_c[io];                //np[im] is zero
+              else
+                coeffs[4] = np[im];
+              /* update upper coeff */
+              coeffs[5] = lp[im];             // JB keeps lower term on surface.
+              /* update upper coeff */
+              coeffs[6] = up[im];             // JB keeps upper term on surface. This should be zero
+            }
+            else
+            {
+              coeffs[0] = cp[im];
               coeffs[1] = wp[im];
-            /* update east coeff */
-            k1 = (int)top_dat[itop + 1];
-            if (k1 == ktop)
-              coeffs[2] = ep_c[io];                  //ep[im] is zero
-            else
               coeffs[2] = ep[im];
-            /* update south coeff */
-            k1 = (int)top_dat[itop - sy_v];
-            if (k1 == ktop)
-              coeffs[3] = sop_c[io];                  //sop[im] is zero
-            else
               coeffs[3] = sop[im];
-            /* update north coeff */
-            k1 = (int)top_dat[itop + sy_v];
-            if (k1 == ktop)
-              coeffs[4] = np_c[io];                  //np[im] is zero
-            else
               coeffs[4] = np[im];
-            /* update upper coeff */
-            coeffs[5] = lp[im];               // JB keeps lower term on surface.
-            /* update upper coeff */
-            coeffs[6] = up[im];               // JB keeps upper term on surface. This should be zero
-          }
-          else
-          {
-            coeffs[0] = cp[im];
-            coeffs[1] = wp[im];
-            coeffs[2] = ep[im];
-            coeffs[3] = sop[im];
-            coeffs[4] = np[im];
-            coeffs[5] = lp[im];
-            coeffs[6] = up[im];
-          }
+              coeffs[5] = lp[im];
+              coeffs[6] = up[im];
+            }
 
-          index[0] = i;
-          index[1] = j;
-          index[2] = k;
-          if (matrix_direct)
-          {
-            int matrix_index = ((k - matrix_hz0) * matrix_hny + (j - matrix_hy0)) * matrix_hnx + (i - matrix_hx0);
-            for (int entry = 0; entry < stencil_size; entry++)
-              matrix_data[entry][matrix_index] = coeffs[entry];
-          }
-          else if (box_transfer)
-          {
-            for (int entry = 0; entry < stencil_size; entry++)
-              box_values[(((size_t)(k - iz) * ny + j - iy) * nx + i - ix) * stencil_size + entry] = coeffs[entry];
-          }
-          else
-          {
-            HYPRE_StructMatrixSetValues(*hypre_mat,
-                                        index,
-                                        stencil_size,
-                                        stencil_indices, coeffs);
-          }
-        });
-      }
-      if (box_transfer)
-        EndTiming(HypreTimingMatrixPack);
+            index[0] = i;
+            index[1] = j;
+            index[2] = k;
+            if (matrix_direct)
+            {
+              int matrix_index = ((k - matrix_hz0) * matrix_hny + (j - matrix_hy0)) * matrix_hnx + (i - matrix_hx0);
+              for (int entry = 0; entry < stencil_size; entry++)
+                matrix_data[entry][matrix_index] = coeffs[entry];
+            }
+            else if (box_transfer)
+            {
+              for (int entry = 0; entry < stencil_size; entry++)
+                box_values[(((size_t)(k - iz) * ny + j - iy) * nx + i - ix) * stencil_size + entry] = coeffs[entry];
+            }
+            else
+            {
+              HYPRE_StructMatrixSetValues(*hypre_mat,
+                                          index,
+                                          stencil_size,
+                                          stencil_indices, coeffs);
+            }
+          });
+        }
+        if (box_transfer)
+          EndTiming(HypreTimingMatrixPack);
       }
       if (box_transfer && !matrix_direct)
       {
         BeginTiming(HypreTimingMatrixSetBox);
         HYPRE_StructMatrixSetBoxValues(*hypre_mat, ilo, ihi, stencil_size,
-                                      symmetric ? stencil_indices_symm : stencil_indices,
-                                      box_values);
+                                       symmetric ? stencil_indices_symm : stencil_indices,
+                                       box_values);
         EndTiming(HypreTimingMatrixSetBox);
       }
     }   /* End subgrid loop */
