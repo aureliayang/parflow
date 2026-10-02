@@ -52,6 +52,10 @@ void HypreCudaPackBoxValues(const double *source, double *values,
 void HypreCudaUnpackBoxValues(const double *values, double *destination,
                               int destination_index, int nx_destination,
                               int ny_destination, int nx, int ny, int nz);
+void HypreCudaDirectVectorCopy(const double *source, double *destination,
+                               int source_index, int nx_source, int ny_source,
+                               int destination_index, int nx_destination,
+                               int ny_destination, int nx, int ny, int nz);
 void HypreCudaPackMatrixBoxValues(
     const double *cp, const double *wp, const double *ep,
     const double *sop, const double *np, const double *lp, const double *up,

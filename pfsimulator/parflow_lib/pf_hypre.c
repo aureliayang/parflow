@@ -233,12 +233,18 @@ void CopyParFlowVectorToHypreVectorAsBoxes(Vector *rhs,
       double *source = SubvectorData(subvector);
       HYPRE_Complex *target = hypre_StructVectorBoxData(*hypre_b, sg);
       BeginTiming(HypreTimingRhsPack);
+#ifdef PARFLOW_HAVE_CUDA
+      HypreCudaDirectVectorCopy(source, (double *) target, source_index,
+                                nx_v, ny_v, target_index, hnx, hny,
+                                nx, ny, nz);
+#else
       BoxLoopI2(i, j, k, ix, iy, iz, nx, ny, nz,
                 source_index, nx_v, ny_v, nz_v, 1, 1, 1,
                 target_index, hnx, hny, hnx * hny, 1, 1, 1,
       {
         target[target_index] = source[source_index];
       });
+#endif
       EndTiming(HypreTimingRhsPack);
     }
     HYPRE_StructVectorAssemble(*hypre_b);
@@ -368,12 +374,18 @@ void CopyHypreVectorToParflowVectorAsBoxes(HYPRE_StructVector* hypre_x,
       HYPRE_Complex *source = hypre_StructVectorBoxData(*hypre_x, sg);
       double *destination = SubvectorData(soln_sub);
       BeginTiming(HypreTimingSolutionUnpack);
+#ifdef PARFLOW_HAVE_CUDA
+      HypreCudaDirectVectorCopy((const double *) source, destination,
+                                source_index, hnx, hny, destination_index,
+                                nx_v, ny_v, nx, ny, nz);
+#else
       BoxLoopI2(i, j, k, ix, iy, iz, nx, ny, nz,
                 source_index, hnx, hny, hnx * hny, 1, 1, 1,
                 destination_index, nx_v, ny_v, nz_v, 1, 1, 1,
       {
         destination[destination_index] = source[source_index];
       });
+#endif
       EndTiming(HypreTimingSolutionUnpack);
     }
     return;

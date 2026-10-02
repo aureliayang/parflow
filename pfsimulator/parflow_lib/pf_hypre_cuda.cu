@@ -98,6 +98,44 @@ extern "C" void HypreCudaUnpackBoxValues(const double *values,
   CheckCuda(cudaStreamSynchronize(0), "UnpackBoxKernel synchronize");
 }
 
+__global__ void DirectVectorCopyKernel(const double *source, double *destination,
+                                       int source_index, int nx_source,
+                                       int ny_source, int destination_index,
+                                       int nx_destination, int ny_destination,
+                                       int nx, int ny, int nz)
+{
+  size_t cell = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+  size_t count = (size_t)nx * (size_t)ny * (size_t)nz;
+  if (cell >= count) return;
+  int i = (int)(cell % (size_t)nx);
+  int j = (int)((cell / (size_t)nx) % (size_t)ny);
+  int k = (int)(cell / ((size_t)nx * (size_t)ny));
+  size_t source_offset = (size_t)source_index + (size_t)i
+                       + (size_t)nx_source * (size_t)j
+                       + (size_t)nx_source * (size_t)ny_source * (size_t)k;
+  size_t destination_offset = (size_t)destination_index + (size_t)i
+                            + (size_t)nx_destination * (size_t)j
+                            + (size_t)nx_destination * (size_t)ny_destination * (size_t)k;
+  destination[destination_offset] = source[source_offset];
+}
+
+extern "C" void HypreCudaDirectVectorCopy(const double *source,
+                                            double *destination,
+                                            int source_index,
+                                            int nx_source, int ny_source,
+                                            int destination_index,
+                                            int nx_destination,
+                                            int ny_destination,
+                                            int nx, int ny, int nz)
+{
+  if (nx <= 0 || ny <= 0 || nz <= 0) return;
+  DirectVectorCopyKernel<<<BlockCount(nx, ny, nz), 256>>>(
+      source, destination, source_index, nx_source, ny_source,
+      destination_index, nx_destination, ny_destination, nx, ny, nz);
+  CheckCuda(cudaGetLastError(), "DirectVectorCopyKernel launch");
+  CheckCuda(cudaStreamSynchronize(0), "DirectVectorCopyKernel synchronize");
+}
+
 
 __global__ void PackMatrixBoxKernel(
     const double *cp, const double *wp, const double *ep,
