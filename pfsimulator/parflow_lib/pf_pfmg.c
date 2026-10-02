@@ -59,10 +59,6 @@ typedef struct {
   HYPRE_StructStencil hypre_stencil;
 
   HYPRE_StructSolver hypre_pfmg_data;
-  int pfmg_signature_valid;
-  int pfmg_stencil_size;
-  int pfmg_symmetric;
-  int pfmg_box_transfer;
 } InstanceXtra;
 
 #endif
@@ -165,17 +161,9 @@ PFModule  *PFMGInitInstanceXtra(
   int num_post_relax = public_xtra->num_post_relax;
   int smoother = public_xtra->smoother;
   int raptype = public_xtra->raptype;
-  int reuse_pfmg = 0;
   const char *reuse_env = getenv("PARFLOW_HYPRE_REUSE_PFMG");
   if (reuse_env && atoi(reuse_env) != 0)
-    reuse_pfmg = 1;
-  int matrix_stencil_size = 0;
-  int matrix_symmetric = 0;
-  if (pf_Bmat != NULL)
-  {
-    matrix_stencil_size = MatrixDataStencilSize(pf_Bmat);
-    matrix_symmetric = MatrixSymmetric(pf_Bmat);
-  }
+    amps_Printf("Warning: PARFLOW_HYPRE_REUSE_PFMG is disabled; repeated HYPRE PFMG Setup is not yet lifecycle-safe.\n");
 
   (void)problem;
   (void)problem_data;
@@ -188,20 +176,14 @@ PFModule  *PFMGInitInstanceXtra(
 
   HypreAssembleGrid(grid, &(instance_xtra->hypre_grid), instance_xtra->dxyz);
 
-  /* By default, rebuild PFMG when the PC matrix is recomputed.  The
-   * reuse option is experimental: it keeps the solver object and reruns
-   * Setup after updating matrix values. */
+  /* Rebuild PFMG when the PC matrix is recomputed.  Repeated Setup on one
+   * solver is not lifecycle-safe in the deployed HYPRE build. */
   if (pf_Bmat != NULL)
   {
-    int signature_changed = !instance_xtra->pfmg_signature_valid
-                         || instance_xtra->pfmg_stencil_size != matrix_stencil_size
-                         || instance_xtra->pfmg_symmetric != matrix_symmetric
-                         || instance_xtra->pfmg_box_transfer != public_xtra->box_transfer;
-    if ((!reuse_pfmg || signature_changed) && instance_xtra->hypre_pfmg_data)
+    if (instance_xtra->hypre_pfmg_data)
     {
       HYPRE_StructPFMGDestroy(instance_xtra->hypre_pfmg_data);
       instance_xtra->hypre_pfmg_data = NULL;
-      instance_xtra->pfmg_signature_valid = 0;
     }
 
     HypreInitialize(pf_Bmat,
@@ -222,7 +204,8 @@ PFModule  *PFMGInitInstanceXtra(
 
     EndTiming(public_xtra->time_index_copy_hypre);
 
-    /* Create the solver once only when the matrix signature is unchanged. */
+    /* Recreate the solver for each matrix setup.  Repeated HYPRE PFMG
+     * Setup on one solver is not lifecycle-safe in the deployed HYPRE build. */
     if (!instance_xtra->hypre_pfmg_data)
     {
       HYPRE_StructPFMGCreate(amps_CommWorld,
@@ -230,7 +213,6 @@ PFModule  *PFMGInitInstanceXtra(
       HYPRE_StructPFMGSetTol(instance_xtra->hypre_pfmg_data, 1.0e-30);
     }
 
-    /* Reapply settings on every setup so reuse cannot retain stale options. */
     HYPRE_StructPFMGSetMaxIter(instance_xtra->hypre_pfmg_data, max_iter);
     HYPRE_StructPFMGSetNumPreRelax(instance_xtra->hypre_pfmg_data,
                                    num_pre_relax);
@@ -256,11 +238,6 @@ PFModule  *PFMGInitInstanceXtra(
           HYPRE_StructPFMGSetPrintLevel(instance_xtra->hypre_pfmg_data, 2);
         }
       }
-
-    instance_xtra->pfmg_signature_valid = 1;
-    instance_xtra->pfmg_stencil_size = matrix_stencil_size;
-    instance_xtra->pfmg_symmetric = matrix_symmetric;
-    instance_xtra->pfmg_box_transfer = public_xtra->box_transfer;
 
     BeginTiming(HypreTimingPFMGSetup);
     HYPRE_StructPFMGSetup(instance_xtra->hypre_pfmg_data,
