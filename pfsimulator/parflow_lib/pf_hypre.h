@@ -56,6 +56,17 @@ void HypreCudaDirectVectorCopy(const double *source, double *destination,
                                int source_index, int nx_source, int ny_source,
                                int destination_index, int nx_destination,
                                int ny_destination, int nx, int ny, int nz);
+void HypreCudaDirectMatrixBoxValues(
+    const double *cp, const double *wp, const double *ep,
+    const double *sop, const double *np, const double *lp, const double *up,
+    const double *cp_c, const double *wp_c, const double *ep_c,
+    const double *sop_c, const double *np_c, const double *top,
+    double *m0, double *m1, double *m2, double *m3, double *m4,
+    double *m5, double *m6, int source_index, int nx_source, int ny_source,
+    int c_index, int nx_c, int top_index, int nx_top, int iz, int ix, int iy,
+    int matrix_hx0, int matrix_hy0, int matrix_hz0, int matrix_hnx,
+    int matrix_hny, int nx, int ny, int nz, int stencil_size, int symmetric,
+    int overland);
 void HypreCudaPackMatrixBoxValues(
     const double *cp, const double *wp, const double *ep,
     const double *sop, const double *np, const double *lp, const double *up,

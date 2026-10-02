@@ -668,7 +668,21 @@ void HypreAssembleMatrixWithTransfer(
 
 #ifdef PARFLOW_HAVE_CUDA
       int matrix_pack_cuda = box_transfer && !matrix_direct;
-      if (matrix_pack_cuda)
+      int matrix_direct_cuda = box_transfer && matrix_direct;
+      if (matrix_direct_cuda)
+      {
+        BeginTiming(HypreTimingMatrixPack);
+        HypreCudaDirectMatrixBoxValues(
+            cp, wp, ep, sop, np, lp, up, NULL, NULL, NULL, NULL, NULL, NULL,
+            (double *)matrix_data[0], (double *)matrix_data[1],
+            (double *)matrix_data[2], (double *)matrix_data[3],
+            (double *)matrix_data[4], (double *)matrix_data[5],
+            (double *)matrix_data[6], im, nx_m, ny_m, 0, 0, 0, 0, iz, ix, iy,
+            matrix_hx0, matrix_hy0, matrix_hz0, matrix_hnx, matrix_hny,
+            nx, ny, nz, stencil_size, symmetric, 0);
+        EndTiming(HypreTimingMatrixPack);
+      }
+      else if (matrix_pack_cuda)
       {
         BeginTiming(HypreTimingMatrixPack);
         HypreCudaPackMatrixBoxValues(
@@ -854,7 +868,23 @@ void HypreAssembleMatrixWithTransfer(
 
 #ifdef PARFLOW_HAVE_CUDA
       int matrix_pack_cuda = box_transfer && !matrix_direct;
-      if (matrix_pack_cuda)
+      int matrix_direct_cuda = box_transfer && matrix_direct;
+      if (matrix_direct_cuda)
+      {
+        BeginTiming(HypreTimingMatrixPack);
+        HypreCudaDirectMatrixBoxValues(
+            cp, wp, ep, sop, np, lp, up, cp_c, wp_c, ep_c, sop_c, np_c, top_dat,
+            (double *)matrix_data[0], (double *)matrix_data[1],
+            (double *)matrix_data[2], (double *)matrix_data[3],
+            (double *)matrix_data[4], (double *)matrix_data[5],
+            (double *)matrix_data[6], im, nx_m, ny_m,
+            SubmatrixEltIndex(pfC_sub, ix, iy, iz), SubmatrixNX(pfC_sub),
+            SubvectorEltIndex(top_sub, ix, iy, 0), SubvectorNX(top_sub), iz,
+            ix, iy, matrix_hx0, matrix_hy0, matrix_hz0, matrix_hnx, matrix_hny,
+            nx, ny, nz, stencil_size, symmetric, 1);
+        EndTiming(HypreTimingMatrixPack);
+      }
+      else if (matrix_pack_cuda)
       {
         BeginTiming(HypreTimingMatrixPack);
         HypreCudaPackMatrixBoxValues(
