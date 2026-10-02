@@ -191,6 +191,15 @@ static int HypreDirectVectorEnabled(void)
   return env && atoi(env) != 0;
 }
 
+/* Experimental: write BoxLoop coefficients into HYPRE's already allocated
+ * StructMatrix storage, bypassing HYPRE_StructMatrixSetBoxValues.  The
+ * default remains off because this relies on HYPRE private matrix layout. */
+static int HypreDirectMatrixEnabled(void)
+{
+  const char *env = getenv("PARFLOW_HYPRE_DIRECT_MATRIX");
+  return env && atoi(env) != 0;
+}
+
 void CopyParFlowVectorToHypreVectorAsBoxes(Vector *rhs,
                                           HYPRE_StructVector *hypre_b)
 {
@@ -520,10 +529,14 @@ void HypreAssembleMatrixWithTransfer(
   double *coeffs = HYPRE_PF_ALLOC(double, 7);
   double *coeffs_symm = HYPRE_PF_ALLOC(double, 4);
   double *box_values = NULL;
+  HYPRE_Complex *matrix_data[7] = { NULL, NULL, NULL, NULL, NULL, NULL, NULL };
+  int matrix_hx0 = 0, matrix_hy0 = 0, matrix_hz0 = 0;
+  int matrix_hnx = 0, matrix_hny = 0;
   int ilo[3], ihi[3];
 
   int stencil_size = MatrixDataStencilSize(pf_Bmat);
   int symmetric = MatrixSymmetric(pf_Bmat);
+  int matrix_direct = box_transfer && HypreDirectMatrixEnabled();
 
   Vector* top = ProblemDataIndexOfDomainTop(problem_data);
 
@@ -573,8 +586,25 @@ void HypreAssembleMatrixWithTransfer(
       {
         ilo[0] = ix; ilo[1] = iy; ilo[2] = iz;
         ihi[0] = ix + nx - 1; ihi[1] = iy + ny - 1; ihi[2] = iz + nz - 1;
-        box_values = (double *) HypreBoxTransferBuffer(
-          sizeof(double) * (size_t)nx * ny * nz * stencil_size);
+        if (matrix_direct)
+        {
+          hypre_Box *matrix_box = hypre_StructMatrixBoxDataBox(*hypre_mat, sg);
+          matrix_hx0 = hypre_BoxIMinD(matrix_box, 0);
+          matrix_hy0 = hypre_BoxIMinD(matrix_box, 1);
+          matrix_hz0 = hypre_BoxIMinD(matrix_box, 2);
+          matrix_hnx = hypre_BoxSizeX(matrix_box);
+          matrix_hny = hypre_BoxSizeY(matrix_box);
+          for (int entry = 0; entry < stencil_size; entry++)
+          {
+            int hentry = symmetric ? stencil_indices_symm[entry] : entry;
+            matrix_data[entry] = hypre_StructMatrixBoxData(*hypre_mat, sg, hentry);
+          }
+        }
+        else
+        {
+          box_values = (double *) HypreBoxTransferBuffer(
+            sizeof(double) * (size_t)nx * ny * nz * stencil_size);
+        }
       }
 
       if (box_transfer)
@@ -591,7 +621,13 @@ void HypreAssembleMatrixWithTransfer(
           index[0] = i;
           index[1] = j;
           index[2] = k;
-          if (box_transfer)
+          if (matrix_direct)
+          {
+            int matrix_index = ((k - matrix_hz0) * matrix_hny + (j - matrix_hy0)) * matrix_hnx + (i - matrix_hx0);
+            for (int entry = 0; entry < stencil_size; entry++)
+              matrix_data[entry][matrix_index] = coeffs_symm[entry];
+          }
+          else if (box_transfer)
           {
             for (int entry = 0; entry < stencil_size; entry++)
               box_values[(((size_t)(k - iz) * ny + j - iy) * nx + i - ix) * stencil_size + entry] = coeffs_symm[entry];
@@ -621,7 +657,13 @@ void HypreAssembleMatrixWithTransfer(
           index[0] = i;
           index[1] = j;
           index[2] = k;
-          if (box_transfer)
+          if (matrix_direct)
+          {
+            int matrix_index = ((k - matrix_hz0) * matrix_hny + (j - matrix_hy0)) * matrix_hnx + (i - matrix_hx0);
+            for (int entry = 0; entry < stencil_size; entry++)
+              matrix_data[entry][matrix_index] = coeffs[entry];
+          }
+          else if (box_transfer)
           {
             for (int entry = 0; entry < stencil_size; entry++)
               box_values[(((size_t)(k - iz) * ny + j - iy) * nx + i - ix) * stencil_size + entry] = coeffs[entry];
@@ -638,11 +680,14 @@ void HypreAssembleMatrixWithTransfer(
       if (box_transfer)
       {
         EndTiming(HypreTimingMatrixPack);
-        BeginTiming(HypreTimingMatrixSetBox);
-        HYPRE_StructMatrixSetBoxValues(*hypre_mat, ilo, ihi, stencil_size,
-                                      symmetric ? stencil_indices_symm : stencil_indices,
-                                      box_values);
-        EndTiming(HypreTimingMatrixSetBox);
+        if (!matrix_direct)
+        {
+          BeginTiming(HypreTimingMatrixSetBox);
+          HYPRE_StructMatrixSetBoxValues(*hypre_mat, ilo, ihi, stencil_size,
+                                        symmetric ? stencil_indices_symm : stencil_indices,
+                                        box_values);
+          EndTiming(HypreTimingMatrixSetBox);
+        }
       }
     }   /* End subgrid loop */
   }
@@ -713,8 +758,25 @@ void HypreAssembleMatrixWithTransfer(
       {
         ilo[0] = ix; ilo[1] = iy; ilo[2] = iz;
         ihi[0] = ix + nx - 1; ihi[1] = iy + ny - 1; ihi[2] = iz + nz - 1;
-        box_values = (double *) HypreBoxTransferBuffer(
-          sizeof(double) * (size_t)nx * ny * nz * stencil_size);
+        if (matrix_direct)
+        {
+          hypre_Box *matrix_box = hypre_StructMatrixBoxDataBox(*hypre_mat, sg);
+          matrix_hx0 = hypre_BoxIMinD(matrix_box, 0);
+          matrix_hy0 = hypre_BoxIMinD(matrix_box, 1);
+          matrix_hz0 = hypre_BoxIMinD(matrix_box, 2);
+          matrix_hnx = hypre_BoxSizeX(matrix_box);
+          matrix_hny = hypre_BoxSizeY(matrix_box);
+          for (int entry = 0; entry < stencil_size; entry++)
+          {
+            int hentry = symmetric ? stencil_indices_symm[entry] : entry;
+            matrix_data[entry] = hypre_StructMatrixBoxData(*hypre_mat, sg, hentry);
+          }
+        }
+        else
+        {
+          box_values = (double *) HypreBoxTransferBuffer(
+            sizeof(double) * (size_t)nx * ny * nz * stencil_size);
+        }
       }
 
       if (box_transfer)
@@ -751,7 +813,13 @@ void HypreAssembleMatrixWithTransfer(
           index[0] = i;
           index[1] = j;
           index[2] = k;
-          if (box_transfer)
+          if (matrix_direct)
+          {
+            int matrix_index = ((k - matrix_hz0) * matrix_hny + (j - matrix_hy0)) * matrix_hnx + (i - matrix_hx0);
+            for (int entry = 0; entry < stencil_size; entry++)
+              matrix_data[entry][matrix_index] = coeffs_symm[entry];
+          }
+          else if (box_transfer)
           {
             for (int entry = 0; entry < stencil_size; entry++)
               box_values[(((size_t)(k - iz) * ny + j - iy) * nx + i - ix) * stencil_size + entry] = coeffs_symm[entry];
@@ -823,7 +891,13 @@ void HypreAssembleMatrixWithTransfer(
           index[0] = i;
           index[1] = j;
           index[2] = k;
-          if (box_transfer)
+          if (matrix_direct)
+          {
+            int matrix_index = ((k - matrix_hz0) * matrix_hny + (j - matrix_hy0)) * matrix_hnx + (i - matrix_hx0);
+            for (int entry = 0; entry < stencil_size; entry++)
+              matrix_data[entry][matrix_index] = coeffs[entry];
+          }
+          else if (box_transfer)
           {
             for (int entry = 0; entry < stencil_size; entry++)
               box_values[(((size_t)(k - iz) * ny + j - iy) * nx + i - ix) * stencil_size + entry] = coeffs[entry];
@@ -840,11 +914,14 @@ void HypreAssembleMatrixWithTransfer(
       if (box_transfer)
       {
         EndTiming(HypreTimingMatrixPack);
-        BeginTiming(HypreTimingMatrixSetBox);
-        HYPRE_StructMatrixSetBoxValues(*hypre_mat, ilo, ihi, stencil_size,
-                                      symmetric ? stencil_indices_symm : stencil_indices,
-                                      box_values);
-        EndTiming(HypreTimingMatrixSetBox);
+        if (!matrix_direct)
+        {
+          BeginTiming(HypreTimingMatrixSetBox);
+          HYPRE_StructMatrixSetBoxValues(*hypre_mat, ilo, ihi, stencil_size,
+                                        symmetric ? stencil_indices_symm : stencil_indices,
+                                        box_values);
+          EndTiming(HypreTimingMatrixSetBox);
+        }
       }
     }   /* End subgrid loop */
   }  /* end if pf_Cmat==NULL */
