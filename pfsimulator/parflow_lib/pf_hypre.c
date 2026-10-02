@@ -619,8 +619,23 @@ void HypreAssembleMatrixWithTransfer(
         }
       }
 
-      if (box_transfer)
+#ifdef PARFLOW_HAVE_CUDA
+      int matrix_pack_cuda = box_transfer && !matrix_direct;
+      if (matrix_pack_cuda)
+      {
         BeginTiming(HypreTimingMatrixPack);
+        HypreCudaPackMatrixBoxValues(
+            cp, wp, ep, sop, np, lp, up,
+            NULL, NULL, NULL, NULL, NULL, NULL, box_values,
+            im, nx_m, ny_m, 0, 0, 0, 0, 0,
+            nx, ny, nz, stencil_size, symmetric, 0);
+        EndTiming(HypreTimingMatrixPack);
+      }
+      else
+#endif
+      {
+        if (box_transfer)
+          BeginTiming(HypreTimingMatrixPack);
       if (symmetric)
       {
         BoxLoopI1(i, j, k, ix, iy, iz, nx, ny, nz,
@@ -690,16 +705,15 @@ void HypreAssembleMatrixWithTransfer(
         });
       }
       if (box_transfer)
-      {
         EndTiming(HypreTimingMatrixPack);
-        if (!matrix_direct)
-        {
-          BeginTiming(HypreTimingMatrixSetBox);
-          HYPRE_StructMatrixSetBoxValues(*hypre_mat, ilo, ihi, stencil_size,
-                                        symmetric ? stencil_indices_symm : stencil_indices,
-                                        box_values);
-          EndTiming(HypreTimingMatrixSetBox);
-        }
+      }
+      if (box_transfer && !matrix_direct)
+      {
+        BeginTiming(HypreTimingMatrixSetBox);
+        HYPRE_StructMatrixSetBoxValues(*hypre_mat, ilo, ihi, stencil_size,
+                                      symmetric ? stencil_indices_symm : stencil_indices,
+                                      box_values);
+        EndTiming(HypreTimingMatrixSetBox);
       }
     }   /* End subgrid loop */
   }
@@ -791,8 +805,26 @@ void HypreAssembleMatrixWithTransfer(
         }
       }
 
-      if (box_transfer)
+#ifdef PARFLOW_HAVE_CUDA
+      int matrix_pack_cuda = box_transfer && !matrix_direct;
+      if (matrix_pack_cuda)
+      {
         BeginTiming(HypreTimingMatrixPack);
+        HypreCudaPackMatrixBoxValues(
+            cp, wp, ep, sop, np, lp, up,
+            cp_c, wp_c, ep_c, sop_c, np_c, top_dat, box_values,
+            im, nx_m, ny_m,
+            SubmatrixEltIndex(pfC_sub, ix, iy, iz),
+            SubmatrixNX(pfC_sub), SubmatrixNY(pfC_sub),
+            SubvectorEltIndex(top_sub, ix, iy, 0), SubvectorNX(top_sub),
+            nx, ny, nz, stencil_size, symmetric, 1);
+        EndTiming(HypreTimingMatrixPack);
+      }
+      else
+#endif
+      {
+        if (box_transfer)
+          BeginTiming(HypreTimingMatrixPack);
       if (symmetric)
       {
         BoxLoopI1(i, j, k, ix, iy, iz, nx, ny, nz,
@@ -924,16 +956,15 @@ void HypreAssembleMatrixWithTransfer(
         });
       }
       if (box_transfer)
-      {
         EndTiming(HypreTimingMatrixPack);
-        if (!matrix_direct)
-        {
-          BeginTiming(HypreTimingMatrixSetBox);
-          HYPRE_StructMatrixSetBoxValues(*hypre_mat, ilo, ihi, stencil_size,
-                                        symmetric ? stencil_indices_symm : stencil_indices,
-                                        box_values);
-          EndTiming(HypreTimingMatrixSetBox);
-        }
+      }
+      if (box_transfer && !matrix_direct)
+      {
+        BeginTiming(HypreTimingMatrixSetBox);
+        HYPRE_StructMatrixSetBoxValues(*hypre_mat, ilo, ihi, stencil_size,
+                                      symmetric ? stencil_indices_symm : stencil_indices,
+                                      box_values);
+        EndTiming(HypreTimingMatrixSetBox);
       }
     }   /* End subgrid loop */
   }  /* end if pf_Cmat==NULL */
