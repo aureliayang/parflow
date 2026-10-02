@@ -31,6 +31,14 @@
 
 #ifdef HAVE_HYPRE
 #include "hypre_dependences.h"
+
+extern int HypreTimingRhsPack;
+extern int HypreTimingRhsSetBox;
+extern int HypreTimingSolutionGetBox;
+extern int HypreTimingSolutionUnpack;
+extern int HypreTimingMatrixPack;
+extern int HypreTimingMatrixSetBox;
+void HypreRegisterTransferTiming(void);
 void CopyParFlowVectorToHypreVectorAsBoxes(Vector *pf_vector,
                                           HYPRE_StructVector *hypre_vector);
 void CopyHypreVectorToParflowVectorAsBoxes(HYPRE_StructVector *hypre_vector,

@@ -338,6 +338,7 @@ PFModule  *PFMGNewPublicXtra(char *name)
 
   public_xtra->time_index_pfmg = RegisterTiming("PFMG");
   public_xtra->time_index_copy_hypre = RegisterTiming("HYPRE_Copies");
+  HypreRegisterTransferTiming();
 
   PFModulePublicXtra(this_module) = public_xtra;
 

@@ -28,13 +28,106 @@
 
 #include "parflow.h"
 
+/* HYPRE CUDA must use the same managed-memory model as ParFlow's CUDA
+ * allocator.  Otherwise HYPRE treats ParFlow pointers as raw device pointers
+ * and its Set/Get routines issue invalid device-to-device copies. */
+#ifdef HAVE_HYPRE
+#include "hypre_dependences.h"
+#ifdef PARFLOW_HAVE_CUDA
+#include <cuda_runtime_api.h>
+#endif
+
+#ifdef PARFLOW_HAVE_CUDA
+static void *HypreManagedAlloc(size_t bytes)
+{
+  void *ptr = NULL;
+  cudaError_t err = cudaMallocManaged(&ptr, bytes, cudaMemAttachGlobal);
+  if (err != cudaSuccess)
+  {
+    fprintf(stderr, "ParFlow-HYPRE managed allocation failed: %s\n", cudaGetErrorString(err));
+    exit(1);
+  }
+  return ptr;
+}
+
+static void HypreManagedFree(void *ptr)
+{
+  if (ptr)
+  {
+    cudaError_t err = cudaFree(ptr);
+    if (err != cudaSuccess)
+    {
+      fprintf(stderr, "ParFlow-HYPRE managed free failed: %s\n", cudaGetErrorString(err));
+      exit(1);
+    }
+  }
+}
+#define HYPRE_PF_ALLOC(type, count) ((type *) HypreManagedAlloc(sizeof(type) * (size_t)(count)))
+#define HYPRE_PF_FREE(ptr) HypreManagedFree((void *) (ptr))
+#else
+#define HYPRE_PF_ALLOC(type, count) ctalloc_amps(type, count)
+#define HYPRE_PF_FREE(ptr) tfree_amps(ptr)
+#endif
+
+/* SetBoxValues/GetBoxValues consume their input before returning.  Keep one
+ * managed scratch buffer and grow it only when a larger local box appears.
+ * Vector and matrix transfers are serialized, so one buffer is sufficient. */
+static void *hypre_box_transfer_buffer = NULL;
+static size_t hypre_box_transfer_capacity = 0;
+
+static void *HypreBoxTransferBuffer(size_t bytes)
+{
+  if (bytes > hypre_box_transfer_capacity)
+  {
+    HYPRE_PF_FREE(hypre_box_transfer_buffer);
+    hypre_box_transfer_buffer = HYPRE_PF_ALLOC(unsigned char, bytes);
+    hypre_box_transfer_capacity = bytes;
+  }
+  return hypre_box_transfer_buffer;
+}
+
+static void ConfigureHypreCudaMemory(void)
+{
+  static int configured = 0;
+  if (!configured)
+  {
+    HYPRE_Initialize();
+    HYPRE_DeviceInitialize();
+    /* In a HYPRE unified-memory build, DEVICE resolves to UVM. */
+    HYPRE_SetMemoryLocation(HYPRE_MEMORY_DEVICE);
+    HYPRE_SetExecutionPolicy(HYPRE_EXEC_DEVICE);
+    configured = 1;
+  }
+}
+#endif
+
+int HypreTimingRhsPack = 0;
+int HypreTimingRhsSetBox = 0;
+int HypreTimingSolutionGetBox = 0;
+int HypreTimingSolutionUnpack = 0;
+int HypreTimingMatrixPack = 0;
+int HypreTimingMatrixSetBox = 0;
+
+void HypreRegisterTransferTiming(void)
+{
+  static int registered = 0;
+  if (!registered)
+  {
+    HypreTimingRhsPack = RegisterTiming("HYPRE_RHS_Pack");
+    HypreTimingRhsSetBox = RegisterTiming("HYPRE_RHS_SetBox");
+    HypreTimingSolutionGetBox = RegisterTiming("HYPRE_Solution_GetBox");
+    HypreTimingSolutionUnpack = RegisterTiming("HYPRE_Solution_Unpack");
+    HypreTimingMatrixPack = RegisterTiming("HYPRE_Matrix_Pack");
+    HypreTimingMatrixSetBox = RegisterTiming("HYPRE_Matrix_SetBox");
+    registered = 1;
+  }
+}
+
 /*--------------------------------------------------------------------------
  * Common functions for HYPRE
  *--------------------------------------------------------------------------*/
 
 #ifdef HAVE_HYPRE
-#include "hypre_dependences.h"
-
 void CopyParFlowVectorToHypreVector(Vector *            rhs,
                                     HYPRE_StructVector* hypre_b)
 {
@@ -68,19 +161,21 @@ void CopyParFlowVectorToHypreVector(Vector *            rhs,
     int iv = SubvectorEltIndex(rhs_sub, ix, iy, iz);
 
 
+    HYPRE_Complex *value = HYPRE_PF_ALLOC(HYPRE_Complex, 1);
     BoxLoopI1(i, j, k, ix, iy, iz, nx, ny, nz,
               iv, nx_v, ny_v, nz_v, 1, 1, 1,
     {
       index[0] = i;
       index[1] = j;
       index[2] = k;
-
+      *value = rhs_ptr[iv];
 #if HYPRE_RELEASE_NUMBER >= 30000
-      HYPRE_StructVectorSetValues(*hypre_b, index, &rhs_ptr[iv]);
+      HYPRE_StructVectorSetValues(*hypre_b, index, value);
 #else
-      HYPRE_StructVectorSetValues(*hypre_b, index, rhs_ptr[iv]);
+      HYPRE_StructVectorSetValues(*hypre_b, index, *value);
 #endif
     });
+    HYPRE_PF_FREE(value);
   }
   HYPRE_StructVectorAssemble(*hypre_b);
 }
@@ -93,23 +188,38 @@ void CopyParFlowVectorToHypreVectorAsBoxes(Vector *rhs,
 {
   Grid *grid = VectorGrid(rhs);
   int sg;
+  int i, j, k;
   ForSubgridI(sg, GridSubgrids(grid))
   {
     Subgrid *subgrid = GridSubgrid(grid, sg);
     Subvector *subvector = VectorSubvector(rhs, sg);
     int ix = SubgridIX(subgrid), iy = SubgridIY(subgrid), iz = SubgridIZ(subgrid);
     int nx = SubgridNX(subgrid), ny = SubgridNY(subgrid), nz = SubgridNZ(subgrid);
+    int nx_v = SubvectorNX(subvector);
+    int ny_v = SubvectorNY(subvector);
+    int nz_v = SubvectorNZ(subvector);
     int ilo[3] = { ix, iy, iz };
     int ihi[3] = { ix + nx - 1, iy + ny - 1, iz + nz - 1 };
     double *source = SubvectorData(subvector);
-    double *values = ctalloc(double, (size_t)nx * ny * nz);
-    size_t offset = 0;
-    for (int k = iz; k < iz + nz; k++)
-      for (int j = iy; j < iy + ny; j++)
-        for (int i = ix; i < ix + nx; i++)
-          values[offset++] = source[SubvectorEltIndex(subvector, i, j, k)];
+    double *values = (double *) HypreBoxTransferBuffer(sizeof(double) *
+                                                        (size_t)nx * ny * nz);
+    int source_index = SubvectorEltIndex(subvector, ix, iy, iz);
+    int values_index = 0;
+
+    /* BoxLoopI2 maps ParFlow's ghost/stride layout to HYPRE's contiguous
+     * x-fastest Box layout.  With the CUDA backend this body is a GPU
+     * lambda; the default backend remains the CPU loop. */
+    BeginTiming(HypreTimingRhsPack);
+    BoxLoopI2(i, j, k, ix, iy, iz, nx, ny, nz,
+              source_index, nx_v, ny_v, nz_v, 1, 1, 1,
+              values_index, nx, ny, nz, 1, 1, 1,
+    {
+      values[values_index] = source[source_index];
+    });
+    EndTiming(HypreTimingRhsPack);
+    BeginTiming(HypreTimingRhsSetBox);
     HYPRE_StructVectorSetBoxValues(*hypre_b, ilo, ihi, values);
-    tfree(values);
+    EndTiming(HypreTimingRhsSetBox);
   }
   HYPRE_StructVectorAssemble(*hypre_b);
 }
@@ -146,17 +256,17 @@ void CopyHypreVectorToParflowVector(HYPRE_StructVector* hypre_x,
 
     int iv = SubvectorEltIndex(soln_sub, ix, iy, iz);
 
+    HYPRE_Complex *value = HYPRE_PF_ALLOC(HYPRE_Complex, 1);
     BoxLoopI1(i, j, k, ix, iy, iz, nx, ny, nz,
               iv, nx_v, ny_v, nz_v, 1, 1, 1,
     {
       index[0] = i;
       index[1] = j;
       index[2] = k;
-
-      double value;
-      HYPRE_StructVectorGetValues(*hypre_x, index, &value);
-      soln_ptr[iv] = value;
+      HYPRE_StructVectorGetValues(*hypre_x, index, value);
+      soln_ptr[iv] = *value;
     });
+    HYPRE_PF_FREE(value);
   }
 }
 
@@ -166,6 +276,7 @@ void CopyHypreVectorToParflowVectorAsBoxes(HYPRE_StructVector* hypre_x,
 {
   Grid* grid = VectorGrid(soln);
   int sg;
+  int i, j, k;
 
   ForSubgridI(sg, GridSubgrids(grid))
   {
@@ -181,18 +292,29 @@ void CopyHypreVectorToParflowVectorAsBoxes(HYPRE_StructVector* hypre_x,
     int ilo[3] = { ix, iy, iz };
     int ihi[3] = { ix + nx - 1, iy + ny - 1, iz + nz - 1 };
 
-    HYPRE_Complex *values = ctalloc(HYPRE_Complex,
-                                    (size_t)nx * ny * nz);
+    HYPRE_Complex *values = (HYPRE_Complex *) HypreBoxTransferBuffer(
+                                        sizeof(HYPRE_Complex) *
+                                        (size_t)nx * ny * nz);
+    BeginTiming(HypreTimingSolutionGetBox);
     HYPRE_StructVectorGetBoxValues(*hypre_x, ilo, ihi, values);
+    EndTiming(HypreTimingSolutionGetBox);
 
-    size_t offset = 0;
-    for (int k = iz; k < iz + nz; k++)
-      for (int j = iy; j < iy + ny; j++)
-        for (int i = ix; i < ix + nx; i++)
-          SubvectorData(soln_sub)[SubvectorEltIndex(soln_sub, i, j, k)] =
-            values[offset++];
+    double *destination = SubvectorData(soln_sub);
+    int destination_index = SubvectorEltIndex(soln_sub, ix, iy, iz);
+    int values_index = 0;
 
-    tfree(values);
+    /* Reverse the same layout conversion on the GPU when CUDA BoxLoops are
+     * enabled; the CPU backend uses the identical indexing expression. */
+    BeginTiming(HypreTimingSolutionUnpack);
+    BoxLoopI2(i, j, k, ix, iy, iz, nx, ny, nz,
+              values_index, nx, ny, nz, 1, 1, 1,
+              destination_index, SubvectorNX(soln_sub),
+              SubvectorNY(soln_sub), SubvectorNZ(soln_sub), 1, 1, 1,
+    {
+      destination[destination_index] = values[values_index];
+    });
+    EndTiming(HypreTimingSolutionUnpack);
+
   }
 }
 
@@ -210,6 +332,7 @@ void HypreAssembleGrid(
 
   if (pf_grid != NULL)
   {
+    ConfigureHypreCudaMemory();
     /* Free the HYPRE grid */
     if (*hypre_grid)
     {
@@ -325,8 +448,8 @@ void HypreAssembleMatrixWithTransfer(
   int stencil_indices_symm[4] = { 0, 1, 2, 3 };
   int index[3];
 
-  double coeffs[7];
-  double coeffs_symm[4];
+  double *coeffs = HYPRE_PF_ALLOC(double, 7);
+  double *coeffs_symm = HYPRE_PF_ALLOC(double, 4);
   double *box_values = NULL;
   int ilo[3], ihi[3];
 
@@ -381,9 +504,12 @@ void HypreAssembleMatrixWithTransfer(
       {
         ilo[0] = ix; ilo[1] = iy; ilo[2] = iz;
         ihi[0] = ix + nx - 1; ihi[1] = iy + ny - 1; ihi[2] = iz + nz - 1;
-        box_values = ctalloc(double, (size_t)nx * ny * nz * stencil_size);
+        box_values = (double *) HypreBoxTransferBuffer(
+          sizeof(double) * (size_t)nx * ny * nz * stencil_size);
       }
 
+      if (box_transfer)
+        BeginTiming(HypreTimingMatrixPack);
       if (symmetric)
       {
         BoxLoopI1(i, j, k, ix, iy, iz, nx, ny, nz,
@@ -442,10 +568,12 @@ void HypreAssembleMatrixWithTransfer(
       }
       if (box_transfer)
       {
+        EndTiming(HypreTimingMatrixPack);
+        BeginTiming(HypreTimingMatrixSetBox);
         HYPRE_StructMatrixSetBoxValues(*hypre_mat, ilo, ihi, stencil_size,
                                       symmetric ? stencil_indices_symm : stencil_indices,
                                       box_values);
-        tfree(box_values);
+        EndTiming(HypreTimingMatrixSetBox);
       }
     }   /* End subgrid loop */
   }
@@ -516,9 +644,12 @@ void HypreAssembleMatrixWithTransfer(
       {
         ilo[0] = ix; ilo[1] = iy; ilo[2] = iz;
         ihi[0] = ix + nx - 1; ihi[1] = iy + ny - 1; ihi[2] = iz + nz - 1;
-        box_values = ctalloc(double, (size_t)nx * ny * nz * stencil_size);
+        box_values = (double *) HypreBoxTransferBuffer(
+          sizeof(double) * (size_t)nx * ny * nz * stencil_size);
       }
 
+      if (box_transfer)
+        BeginTiming(HypreTimingMatrixPack);
       if (symmetric)
       {
         BoxLoopI1(i, j, k, ix, iy, iz, nx, ny, nz,
@@ -639,15 +770,19 @@ void HypreAssembleMatrixWithTransfer(
       }
       if (box_transfer)
       {
+        EndTiming(HypreTimingMatrixPack);
+        BeginTiming(HypreTimingMatrixSetBox);
         HYPRE_StructMatrixSetBoxValues(*hypre_mat, ilo, ihi, stencil_size,
                                       symmetric ? stencil_indices_symm : stencil_indices,
                                       box_values);
-        tfree(box_values);
+        EndTiming(HypreTimingMatrixSetBox);
       }
     }   /* End subgrid loop */
   }  /* end if pf_Cmat==NULL */
 
   HYPRE_StructMatrixAssemble(*hypre_mat);
+  HYPRE_PF_FREE(coeffs);
+  HYPRE_PF_FREE(coeffs_symm);
 }
 
 /* Preserve the shared point path used by SMG and existing callers. */
