@@ -161,9 +161,6 @@ PFModule  *PFMGInitInstanceXtra(
   int num_post_relax = public_xtra->num_post_relax;
   int smoother = public_xtra->smoother;
   int raptype = public_xtra->raptype;
-  const char *reuse_env = getenv("PARFLOW_HYPRE_REUSE_PFMG");
-  if (reuse_env && atoi(reuse_env) != 0)
-    amps_Printf("Warning: PARFLOW_HYPRE_REUSE_PFMG is disabled; repeated HYPRE PFMG Setup is not yet lifecycle-safe.\n");
 
   (void)problem;
   (void)problem_data;
@@ -176,10 +173,12 @@ PFModule  *PFMGInitInstanceXtra(
 
   HypreAssembleGrid(grid, &(instance_xtra->hypre_grid), instance_xtra->dxyz);
 
-  /* Rebuild PFMG when the PC matrix is recomputed.  Repeated Setup on one
-   * solver is not lifecycle-safe in the deployed HYPRE build. */
+  /* Reset the HYPRE solver for each recompute of the PC matrix.
+   * This reset will require a matrix copy from PF format to HYPRE format. */
   if (pf_Bmat != NULL)
   {
+    /* Free old solver data because HYPRE requires a new solver if
+     * matrix values change */
     if (instance_xtra->hypre_pfmg_data)
     {
       HYPRE_StructPFMGDestroy(instance_xtra->hypre_pfmg_data);
@@ -204,15 +203,12 @@ PFModule  *PFMGInitInstanceXtra(
 
     EndTiming(public_xtra->time_index_copy_hypre);
 
-    /* Recreate the solver for each matrix setup.  Repeated HYPRE PFMG
-     * Setup on one solver is not lifecycle-safe in the deployed HYPRE build. */
-    if (!instance_xtra->hypre_pfmg_data)
-    {
-      HYPRE_StructPFMGCreate(amps_CommWorld,
-                             &(instance_xtra->hypre_pfmg_data));
-      HYPRE_StructPFMGSetTol(instance_xtra->hypre_pfmg_data, 1.0e-30);
-    }
+    /* Set up the PFMG preconditioner */
+    HYPRE_StructPFMGCreate(amps_CommWorld,
+                           &(instance_xtra->hypre_pfmg_data));
 
+    HYPRE_StructPFMGSetTol(instance_xtra->hypre_pfmg_data, 1.0e-30);
+    /* Set user parameters for PFMG */
     HYPRE_StructPFMGSetMaxIter(instance_xtra->hypre_pfmg_data, max_iter);
     HYPRE_StructPFMGSetNumPreRelax(instance_xtra->hypre_pfmg_data,
                                    num_pre_relax);
@@ -229,21 +225,19 @@ PFModule  *PFMGInitInstanceXtra(
     HYPRE_StructPFMGSetDxyz(instance_xtra->hypre_pfmg_data,
                             instance_xtra->dxyz);
 
-      /* Enable logging BEFORE setup so that norms arrays are allocated */
-      if (public_xtra->hypre_logging)
+    /* Enable logging BEFORE setup so that norms arrays are allocated */
+    if (public_xtra->hypre_logging)
+    {
+      IfLogging(1)
       {
-        IfLogging(1)
-        {
-          HYPRE_StructPFMGSetLogging(instance_xtra->hypre_pfmg_data, 1);
-          HYPRE_StructPFMGSetPrintLevel(instance_xtra->hypre_pfmg_data, 2);
-        }
+        HYPRE_StructPFMGSetLogging(instance_xtra->hypre_pfmg_data, 1);
+        HYPRE_StructPFMGSetPrintLevel(instance_xtra->hypre_pfmg_data, 2);
       }
+    }
 
-    BeginTiming(HypreTimingPFMGSetup);
     HYPRE_StructPFMGSetup(instance_xtra->hypre_pfmg_data,
                           instance_xtra->hypre_mat,
                           instance_xtra->hypre_b, instance_xtra->hypre_x);
-    EndTiming(HypreTimingPFMGSetup);
   }
 
   PFModuleInstanceXtra(this_module) = instance_xtra;
