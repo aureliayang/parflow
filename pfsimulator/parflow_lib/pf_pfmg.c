@@ -59,6 +59,10 @@ typedef struct {
   HYPRE_StructStencil hypre_stencil;
 
   HYPRE_StructSolver hypre_pfmg_data;
+  int pfmg_signature_valid;
+  int pfmg_stencil_size;
+  int pfmg_symmetric;
+  int pfmg_box_transfer;
 } InstanceXtra;
 
 #endif
@@ -165,6 +169,13 @@ PFModule  *PFMGInitInstanceXtra(
   const char *reuse_env = getenv("PARFLOW_HYPRE_REUSE_PFMG");
   if (reuse_env && atoi(reuse_env) != 0)
     reuse_pfmg = 1;
+  int matrix_stencil_size = 0;
+  int matrix_symmetric = 0;
+  if (pf_Bmat != NULL)
+  {
+    matrix_stencil_size = MatrixDataStencilSize(pf_Bmat);
+    matrix_symmetric = MatrixSymmetric(pf_Bmat);
+  }
 
   (void)problem;
   (void)problem_data;
@@ -182,10 +193,15 @@ PFModule  *PFMGInitInstanceXtra(
    * Setup after updating matrix values. */
   if (pf_Bmat != NULL)
   {
-    if (!reuse_pfmg && instance_xtra->hypre_pfmg_data)
+    int signature_changed = !instance_xtra->pfmg_signature_valid
+                         || instance_xtra->pfmg_stencil_size != matrix_stencil_size
+                         || instance_xtra->pfmg_symmetric != matrix_symmetric
+                         || instance_xtra->pfmg_box_transfer != public_xtra->box_transfer;
+    if ((!reuse_pfmg || signature_changed) && instance_xtra->hypre_pfmg_data)
     {
       HYPRE_StructPFMGDestroy(instance_xtra->hypre_pfmg_data);
       instance_xtra->hypre_pfmg_data = NULL;
+      instance_xtra->pfmg_signature_valid = 0;
     }
 
     HypreInitialize(pf_Bmat,
@@ -206,15 +222,15 @@ PFModule  *PFMGInitInstanceXtra(
 
     EndTiming(public_xtra->time_index_copy_hypre);
 
-    /* Set up the PFMG preconditioner once, unless the default rebuild
-     * path above cleared the solver object. */
+    /* Create the solver once only when the matrix signature is unchanged. */
     if (!instance_xtra->hypre_pfmg_data)
     {
       HYPRE_StructPFMGCreate(amps_CommWorld,
                              &(instance_xtra->hypre_pfmg_data));
-
       HYPRE_StructPFMGSetTol(instance_xtra->hypre_pfmg_data, 1.0e-30);
-    /* Set user parameters for PFMG */
+    }
+
+    /* Reapply settings on every setup so reuse cannot retain stale options. */
     HYPRE_StructPFMGSetMaxIter(instance_xtra->hypre_pfmg_data, max_iter);
     HYPRE_StructPFMGSetNumPreRelax(instance_xtra->hypre_pfmg_data,
                                    num_pre_relax);
@@ -240,7 +256,11 @@ PFModule  *PFMGInitInstanceXtra(
           HYPRE_StructPFMGSetPrintLevel(instance_xtra->hypre_pfmg_data, 2);
         }
       }
-    }
+
+    instance_xtra->pfmg_signature_valid = 1;
+    instance_xtra->pfmg_stencil_size = matrix_stencil_size;
+    instance_xtra->pfmg_symmetric = matrix_symmetric;
+    instance_xtra->pfmg_box_transfer = public_xtra->box_transfer;
 
     BeginTiming(HypreTimingPFMGSetup);
     HYPRE_StructPFMGSetup(instance_xtra->hypre_pfmg_data,
