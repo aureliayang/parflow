@@ -42,6 +42,9 @@ extern int HypreTimingPFMGSetup;
 void HypreRegisterTransferTiming(void);
 
 #ifdef PARFLOW_HAVE_CUDA
+#ifdef __cplusplus
+extern "C" {
+#endif
 /* CUDA staging kernels for the public HYPRE StructVector Box interface. */
 void HypreCudaPackBoxValues(const double *source, double *values,
                             int source_index, int nx_source, int ny_source,
@@ -49,6 +52,9 @@ void HypreCudaPackBoxValues(const double *source, double *values,
 void HypreCudaUnpackBoxValues(const double *values, double *destination,
                               int destination_index, int nx_destination,
                               int ny_destination, int nx, int ny, int nz);
+#ifdef __cplusplus
+}
+#endif
 #endif
 void CopyParFlowVectorToHypreVectorAsBoxes(Vector *pf_vector,
                                           HYPRE_StructVector *hypre_vector);

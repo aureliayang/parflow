@@ -135,7 +135,6 @@ if((${PARFLOW_HAVE_CUDA}) OR (${PARFLOW_HAVE_KOKKOS}) OR (${PARFLOW_HAVE_OMP}))
     set(SRC_FILES_ARCH_TYPE_0 clustering.cpp grgeometry.cpp)
     set(SRC_FILES_ARCH_TYPE_1
         axpy.cpp
-        pf_hypre_cuda.cu
         copy.cpp
         innerprod.cpp
         matrix.cpp
@@ -158,6 +157,13 @@ if((${PARFLOW_HAVE_CUDA}) OR (${PARFLOW_HAVE_KOKKOS}) OR (${PARFLOW_HAVE_OMP}))
         vector.cpp
         vector_utilities.cpp
     )
+
+    # The HYPRE vector staging kernels are native CUDA code.  Do not expose
+    # the .cu file to Kokkos or OpenMP builds.
+    if((${PARFLOW_HAVE_CUDA}) AND (NOT (${PARFLOW_HAVE_KOKKOS})))
+        list(APPEND SRC_FILES_ARCH_TYPE_1 pf_hypre_cuda.cu)
+    endif()
+
     set(SRC_FILES_ARCH_TYPE_2
         background.cpp
         calc_elevations.cpp
