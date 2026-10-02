@@ -192,6 +192,14 @@ static int HypreDirectVectorEnabled(void)
   return env && atoi(env) != 0;
 }
 
+/* Experimental public API path: let HYPRE index ParFlow's ghosted layout
+ * through Set/GetBoxValues2 instead of using a contiguous staging buffer. */
+static int HypreBoxValues2Enabled(void)
+{
+  const char *env = getenv("PARFLOW_HYPRE_BOX_VALUES2");
+  return env && atoi(env) != 0;
+}
+
 /* Experimental: write BoxLoop coefficients into HYPRE's already allocated
  * StructMatrix storage, bypassing HYPRE_StructMatrixSetBoxValues.  The
  * default remains off because this relies on HYPRE private matrix layout. */
@@ -251,6 +259,18 @@ void CopyParFlowVectorToHypreVectorAsBoxes(Vector *rhs,
     int ilo[3] = { ix, iy, iz };
     int ihi[3] = { ix + nx - 1, iy + ny - 1, iz + nz - 1 };
     double *source = SubvectorData(subvector);
+    if (HypreBoxValues2Enabled())
+    {
+      int vilower[3] = { SubvectorIX(subvector), SubvectorIY(subvector),
+                         SubvectorIZ(subvector) };
+      int viupper[3] = { vilower[0] + nx_v - 1, vilower[1] + ny_v - 1,
+                         vilower[2] + nz_v - 1 };
+      BeginTiming(HypreTimingRhsSetBox);
+      HYPRE_StructVectorSetBoxValues2(*hypre_b, ilo, ihi, vilower, viupper,
+                                      (HYPRE_Complex *) source);
+      EndTiming(HypreTimingRhsSetBox);
+      continue;
+    }
     double *values = (double *) HypreBoxTransferBuffer(sizeof(double) *
                                                         (size_t)nx * ny * nz);
     int source_index = SubvectorEltIndex(subvector, ix, iy, iz);
@@ -373,9 +393,25 @@ void CopyHypreVectorToParflowVectorAsBoxes(HYPRE_StructVector* hypre_x,
     int nx = SubgridNX(subgrid);
     int ny = SubgridNY(subgrid);
     int nz = SubgridNZ(subgrid);
+    int nx_v = SubvectorNX(soln_sub);
+    int ny_v = SubvectorNY(soln_sub);
+    int nz_v = SubvectorNZ(soln_sub);
     int ilo[3] = { ix, iy, iz };
     int ihi[3] = { ix + nx - 1, iy + ny - 1, iz + nz - 1 };
 
+    double *destination = SubvectorData(soln_sub);
+    if (HypreBoxValues2Enabled())
+    {
+      int vilower[3] = { SubvectorIX(soln_sub), SubvectorIY(soln_sub),
+                         SubvectorIZ(soln_sub) };
+      int viupper[3] = { vilower[0] + nx_v - 1, vilower[1] + ny_v - 1,
+                         vilower[2] + nz_v - 1 };
+      BeginTiming(HypreTimingSolutionGetBox);
+      HYPRE_StructVectorGetBoxValues2(*hypre_x, ilo, ihi, vilower, viupper,
+                                      (HYPRE_Complex *) destination);
+      EndTiming(HypreTimingSolutionGetBox);
+      continue;
+    }
     HYPRE_Complex *values = (HYPRE_Complex *) HypreBoxTransferBuffer(
                                         sizeof(HYPRE_Complex) *
                                         (size_t)nx * ny * nz);
@@ -383,7 +419,6 @@ void CopyHypreVectorToParflowVectorAsBoxes(HYPRE_StructVector* hypre_x,
     HYPRE_StructVectorGetBoxValues(*hypre_x, ilo, ihi, values);
     EndTiming(HypreTimingSolutionGetBox);
 
-    double *destination = SubvectorData(soln_sub);
     int destination_index = SubvectorEltIndex(soln_sub, ix, iy, iz);
     int values_index = 0;
 
