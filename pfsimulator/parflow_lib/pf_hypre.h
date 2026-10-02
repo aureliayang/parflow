@@ -38,6 +38,7 @@ extern int HypreTimingSolutionGetBox;
 extern int HypreTimingSolutionUnpack;
 extern int HypreTimingMatrixPack;
 extern int HypreTimingMatrixSetBox;
+extern int HypreTimingPFMGSetup;
 void HypreRegisterTransferTiming(void);
 void CopyParFlowVectorToHypreVectorAsBoxes(Vector *pf_vector,
                                           HYPRE_StructVector *hypre_vector);

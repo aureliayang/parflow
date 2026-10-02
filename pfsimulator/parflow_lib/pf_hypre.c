@@ -107,6 +107,7 @@ int HypreTimingSolutionGetBox = 0;
 int HypreTimingSolutionUnpack = 0;
 int HypreTimingMatrixPack = 0;
 int HypreTimingMatrixSetBox = 0;
+int HypreTimingPFMGSetup = 0;
 
 void HypreRegisterTransferTiming(void)
 {
@@ -119,6 +120,7 @@ void HypreRegisterTransferTiming(void)
     HypreTimingSolutionUnpack = RegisterTiming("HYPRE_Solution_Unpack");
     HypreTimingMatrixPack = RegisterTiming("HYPRE_Matrix_Pack");
     HypreTimingMatrixSetBox = RegisterTiming("HYPRE_Matrix_SetBox");
+    HypreTimingPFMGSetup = RegisterTiming("HYPRE_PFMG_Setup");
     registered = 1;
   }
 }
