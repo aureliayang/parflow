@@ -60,7 +60,7 @@ void HypreCudaPackMatrixBoxValues(
     const double *top, double *values,
     int source_index, int nx_source, int ny_source,
     int c_index, int nx_c, int ny_c,
-    int top_index, int nx_top,
+    int top_index, int nx_top, int iz,
     int nx, int ny, int nz, int stencil_size,
     int symmetric, int overland);
 #ifdef __cplusplus

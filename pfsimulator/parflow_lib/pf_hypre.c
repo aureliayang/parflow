@@ -627,7 +627,7 @@ void HypreAssembleMatrixWithTransfer(
         HypreCudaPackMatrixBoxValues(
             cp, wp, ep, sop, np, lp, up,
             NULL, NULL, NULL, NULL, NULL, NULL, box_values,
-            im, nx_m, ny_m, 0, 0, 0, 0, 0,
+            im, nx_m, ny_m, 0, 0, 0, 0, 0, 0,
             nx, ny, nz, stencil_size, symmetric, 0);
         EndTiming(HypreTimingMatrixPack);
       }
@@ -816,7 +816,7 @@ void HypreAssembleMatrixWithTransfer(
             im, nx_m, ny_m,
             SubmatrixEltIndex(pfC_sub, ix, iy, iz),
             SubmatrixNX(pfC_sub), SubmatrixNY(pfC_sub),
-            SubvectorEltIndex(top_sub, ix, iy, 0), SubvectorNX(top_sub),
+            SubvectorEltIndex(top_sub, ix, iy, 0), SubvectorNX(top_sub), iz,
             nx, ny, nz, stencil_size, symmetric, 1);
         EndTiming(HypreTimingMatrixPack);
       }

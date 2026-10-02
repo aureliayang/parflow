@@ -107,7 +107,7 @@ __global__ void PackMatrixBoxKernel(
     const double *top, double *values,
     int source_index, int nx_source, int ny_source,
     int c_index, int nx_c, int ny_c,
-    int top_index, int nx_top,
+    int top_index, int nx_top, int iz,
     int nx, int ny, int nz, int stencil_size,
     int symmetric, int overland)
 {
@@ -153,12 +153,11 @@ __global__ void PackMatrixBoxKernel(
                        + (size_t)nx_top * (size_t)j];
   if (symmetric)
   {
-    if (top_k == k)
+    if (top_k == iz + k)
     {
       size_t csrc = (size_t)c_index
                   + (size_t)i
-                  + (size_t)nx_c * (size_t)j
-                  + (size_t)nx_c * (size_t)ny_c * (size_t)k;
+                  + (size_t)nx_c * (size_t)j;
       values[out + 0] = cp_c[csrc];
       values[out + 1] = ep[src];
       values[out + 2] = np[src];
@@ -174,12 +173,11 @@ __global__ void PackMatrixBoxKernel(
   }
   else
   {
-    if (top_k == k)
+    if (top_k == iz + k)
     {
       size_t csrc = (size_t)c_index
                   + (size_t)i
-                  + (size_t)nx_c * (size_t)j
-                  + (size_t)nx_c * (size_t)ny_c * (size_t)k;
+                  + (size_t)nx_c * (size_t)j;
       size_t t = (size_t)top_index + (size_t)i
                + (size_t)nx_top * (size_t)j;
       values[out + 0] = cp_c[csrc];
@@ -211,7 +209,7 @@ extern "C" void HypreCudaPackMatrixBoxValues(
     const double *top, double *values,
     int source_index, int nx_source, int ny_source,
     int c_index, int nx_c, int ny_c,
-    int top_index, int nx_top,
+    int top_index, int nx_top, int iz,
     int nx, int ny, int nz, int stencil_size,
     int symmetric, int overland)
 {
@@ -222,7 +220,7 @@ extern "C" void HypreCudaPackMatrixBoxValues(
   PackMatrixBoxKernel<<<BlockCount(nx, ny, nz), 256>>>(
       cp, wp, ep, sop, np, lp, up, cp_c, wp_c, ep_c, sop_c, np_c, top,
       values, source_index, nx_source, ny_source, c_index, nx_c, ny_c,
-      top_index, nx_top, nx, ny, nz, stencil_size, symmetric, overland);
+      top_index, nx_top, iz, nx, ny, nz, stencil_size, symmetric, overland);
   CheckCuda(cudaGetLastError(), "PackMatrixBoxKernel launch");
   CheckCuda(cudaStreamSynchronize(0), "PackMatrixBoxKernel synchronize");
 }
