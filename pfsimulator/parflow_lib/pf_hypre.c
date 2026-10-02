@@ -27,6 +27,7 @@
 **********************************************************************EHEADER*/
 
 #include "parflow.h"
+#include "pf_hypre.h"
 
 /* HYPRE CUDA must use the same managed-memory model as ParFlow's CUDA
  * allocator.  Otherwise HYPRE treats ParFlow pointers as raw device pointers
@@ -255,16 +256,21 @@ void CopyParFlowVectorToHypreVectorAsBoxes(Vector *rhs,
     int source_index = SubvectorEltIndex(subvector, ix, iy, iz);
     int values_index = 0;
 
-    /* BoxLoopI2 maps ParFlow's ghost/stride layout to HYPRE's contiguous
-     * x-fastest Box layout.  With the CUDA backend this body is a GPU
-     * lambda; the default backend remains the CPU loop. */
+    /* Pack the ParFlow ghost/stride layout into HYPRE's contiguous
+     * x-fastest Box layout.  The CUDA build uses an explicit kernel here;
+     * the C build keeps the original BoxLoop implementation. */
     BeginTiming(HypreTimingRhsPack);
+#ifdef PARFLOW_HAVE_CUDA
+    HypreCudaPackBoxValues(source, values, source_index, nx_v, ny_v,
+                           nx, ny, nz);
+#else
     BoxLoopI2(i, j, k, ix, iy, iz, nx, ny, nz,
               source_index, nx_v, ny_v, nz_v, 1, 1, 1,
               values_index, nx, ny, nz, 1, 1, 1,
     {
       values[values_index] = source[source_index];
     });
+#endif
     EndTiming(HypreTimingRhsPack);
     BeginTiming(HypreTimingRhsSetBox);
     HYPRE_StructVectorSetBoxValues(*hypre_b, ilo, ihi, values);
@@ -381,9 +387,14 @@ void CopyHypreVectorToParflowVectorAsBoxes(HYPRE_StructVector* hypre_x,
     int destination_index = SubvectorEltIndex(soln_sub, ix, iy, iz);
     int values_index = 0;
 
-    /* Reverse the same layout conversion on the GPU when CUDA BoxLoops are
-     * enabled; the CPU backend uses the identical indexing expression. */
+    /* Reverse the same layout conversion.  The CUDA build uses an explicit
+     * kernel; the C build keeps the original BoxLoop implementation. */
     BeginTiming(HypreTimingSolutionUnpack);
+#ifdef PARFLOW_HAVE_CUDA
+    HypreCudaUnpackBoxValues(values, destination, destination_index,
+                             SubvectorNX(soln_sub), SubvectorNY(soln_sub),
+                             nx, ny, nz);
+#else
     BoxLoopI2(i, j, k, ix, iy, iz, nx, ny, nz,
               values_index, nx, ny, nz, 1, 1, 1,
               destination_index, SubvectorNX(soln_sub),
@@ -391,6 +402,7 @@ void CopyHypreVectorToParflowVectorAsBoxes(HYPRE_StructVector* hypre_x,
     {
       destination[destination_index] = values[values_index];
     });
+#endif
     EndTiming(HypreTimingSolutionUnpack);
 
   }

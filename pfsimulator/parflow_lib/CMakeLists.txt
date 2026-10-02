@@ -135,6 +135,7 @@ if((${PARFLOW_HAVE_CUDA}) OR (${PARFLOW_HAVE_KOKKOS}) OR (${PARFLOW_HAVE_OMP}))
     set(SRC_FILES_ARCH_TYPE_0 clustering.cpp grgeometry.cpp)
     set(SRC_FILES_ARCH_TYPE_1
         axpy.cpp
+        pf_hypre_cuda.cu
         copy.cpp
         innerprod.cpp
         matrix.cpp
