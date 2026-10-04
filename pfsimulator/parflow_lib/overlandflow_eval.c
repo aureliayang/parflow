@@ -47,7 +47,9 @@
  * Structures
  *--------------------------------------------------------------------------*/
 
-typedef void PublicXtra;
+typedef struct {
+  int time_index;
+} PublicXtra;
 
 typedef void InstanceXtra;
 
@@ -74,6 +76,10 @@ void    OverlandFlowEval(
                                             * fcn = CALCDER => calculate the function
                                             *                  derivative */
 {
+  PFModule      *this_module = ThisPFModule;
+  PublicXtra    *public_xtra = (PublicXtra*)PFModulePublicXtra(this_module);
+  BeginTiming(public_xtra->time_index);
+
   Vector      *slope_x = ProblemDataTSlopeX(problem_data);
   Vector      *slope_y = ProblemDataTSlopeY(problem_data);
   Vector      *mannings = ProblemDataMannings(problem_data);
@@ -368,6 +374,8 @@ void    OverlandFlowEval(
                            );
     }
   }
+
+  EndTiming(public_xtra->time_index);
 }
 
 /*--------------------------------------------------------------------------
@@ -410,7 +418,8 @@ PFModule  *OverlandFlowEvalNewPublicXtra()
   PFModule      *this_module = ThisPFModule;
   PublicXtra    *public_xtra;
 
-  public_xtra = NULL;
+  public_xtra = ctalloc(PublicXtra, 1);
+  public_xtra->time_index = RegisterTiming("OverlandFlow");
 
   PFModulePublicXtra(this_module) = public_xtra;
   return this_module;

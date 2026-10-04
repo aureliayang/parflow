@@ -30,6 +30,8 @@
 #include "pf_devices.h"
 #include "pf_cudamalloc.h"
 
+extern int pf_cuda_defer_sync;
+
 extern "C++" {
 #include <tuple>
 #include <cub/cub.cuh>
@@ -911,7 +913,7 @@ DotKernel(LambdaFun loop_fun, const T init_val, T * __restrict__ rslt,
                                                                                                                    \
                   BoxKernel << < grid, block >> > (lambda_body, PV_nx, PV_ny, PV_nz);                              \
                   CUDA_ERR(cudaPeekAtLastError());                                                                 \
-                  CUDA_ERR(cudaStreamSynchronize(0));                                                              \
+                  if (!pf_cuda_defer_sync) CUDA_ERR(cudaStreamSynchronize(0));                                                              \
                 }                                                                                                  \
               }                                                                                                    \
               GrGeomSolidCellFlagInitialized(grgeom) |= (1 << (2 + PV_f));                                         \
@@ -954,7 +956,7 @@ DotKernel(LambdaFun loop_fun, const T init_val, T * __restrict__ rslt,
                                                                                                                    \
                 BoxKernel << < grid, block >> > (lambda_body, nx_gpu, ny_gpu, nz_gpu);                             \
                 CUDA_ERR(cudaPeekAtLastError());                                                                   \
-                CUDA_ERR(cudaStreamSynchronize(0));                                                                \
+                if (!pf_cuda_defer_sync) CUDA_ERR(cudaStreamSynchronize(0));                                                                \
               }                                                                                                    \
             }                                                                                                      \
           }                                                                                                        \

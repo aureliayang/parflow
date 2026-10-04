@@ -39,6 +39,8 @@
 
 typedef struct {
   int time_index;
+  int density_time_index;
+  int saturation_time_index;
   double SpinupDampP1;      // NBE
   double SpinupDampP2;      // NBE
   int tfgupwind;           //@RMM added for TFG formulation switch
@@ -318,11 +320,15 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
 
   /* Calculate pressure dependent properties: density and saturation */
 
+  BeginTiming(public_xtra->density_time_index);
   PFModuleInvokeType(PhaseDensityInvoke, density_module, (0, pressure, density, &dtmp, &dtmp,
                                                           CALCFCN));
+  EndTiming(public_xtra->density_time_index);
 
+  BeginTiming(public_xtra->saturation_time_index);
   PFModuleInvokeType(SaturationInvoke, saturation_module, (saturation, pressure, density,
                                                            gravity, problem_data, CALCFCN));
+  EndTiming(public_xtra->saturation_time_index);
 
 
   /* Calculate accumulation terms for the function values */
@@ -2512,6 +2518,8 @@ PFModule   *NlFunctionEvalNewPublicXtra(char *name)
   NA_FreeNameArray(upwind_switch_na);
 
   (public_xtra->time_index) = RegisterTiming("NL_F_Eval");
+  (public_xtra->density_time_index) = RegisterTiming("PhaseDensity_NL");
+  (public_xtra->saturation_time_index) = RegisterTiming("Saturation_NL");
 
   PFModulePublicXtra(this_module) = public_xtra;
 

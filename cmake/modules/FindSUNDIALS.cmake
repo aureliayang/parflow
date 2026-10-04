@@ -28,12 +28,18 @@ if(SUNDIALS_DIR)
             # Need to make sure variable to search for isn't set
             unset(SUNDIALS_LIB CACHE)
 
+            set(_sundials_names ${comp})
+            # SUNDIALS 6 renamed the core library to generic.
+            if(comp STREQUAL "sundials_core")
+                list(APPEND _sundials_names sundials_generic)
+            endif()
             find_library(
                 SUNDIALS_LIB
-                NAMES ${comp}
+                NAMES ${_sundials_names}
                 HINTS ${SUNDIALS_LIBRARY_DIR}
                 NO_DEFAULT_PATH
             )
+            unset(_sundials_names)
 
             if(SUNDIALS_LIB)
                 list(APPEND SUNDIALS_LIBRARIES ${SUNDIALS_LIB})

@@ -235,9 +235,13 @@ PFModule  *PFMGInitInstanceXtra(
       }
     }
 
+    BeginTiming(HypreTimingPFMGSetup);
+
     HYPRE_StructPFMGSetup(instance_xtra->hypre_pfmg_data,
                           instance_xtra->hypre_mat,
                           instance_xtra->hypre_b, instance_xtra->hypre_x);
+
+    EndTiming(HypreTimingPFMGSetup);
   }
 
   PFModuleInstanceXtra(this_module) = instance_xtra;

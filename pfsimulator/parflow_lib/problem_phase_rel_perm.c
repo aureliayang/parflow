@@ -28,6 +28,10 @@
 
 #include "parflow.h"
 
+#ifdef PARFLOW_HAVE_CUDA
+int pf_cuda_defer_sync = 0;
+#endif
+
 #include <string.h>
 #include <assert.h>
 
@@ -47,6 +51,9 @@ typedef struct {
 typedef struct {
   Grid   *grid;
   double *temp_data;
+  Vector *region_map;
+  int region_map_ready;
+  int region_map_enabled;
 } InstanceXtra;
 
 typedef struct {
@@ -401,6 +408,136 @@ static inline double VanGLookupLinear(
 
 
 /*--------------------------------------------------------------------------
+ * Optional fused interior evaluation.  The region map is built once for
+ * the current case; the default path remains unchanged.
+ *--------------------------------------------------------------------------*/
+static void PhaseRelPermFusedInterior(
+                                     Vector *phase_rel_perm,
+                                     Vector *phase_pressure,
+                                     Vector *phase_density,
+                                     double gravity,
+                                     ProblemData *problem_data,
+                                     Type1 *data,
+                                     InstanceXtra *instance_xtra,
+                                     Vector *region_map,
+                                     int fcn)
+{
+  Grid *grid = VectorGrid(phase_rel_perm);
+  GrGeomSolid *gr_domain = ProblemDataGrDomain(problem_data);
+  SubgridArray *subgrids = GridSubgrids(grid);
+  int sg;
+  int i, j, k;
+
+  ForSubgridI(sg, subgrids)
+  {
+    Subgrid *subgrid = SubgridArraySubgrid(subgrids, sg);
+    Subvector *pr_sub = VectorSubvector(phase_rel_perm, sg);
+    Subvector *pp_sub = VectorSubvector(phase_pressure, sg);
+    Subvector *pd_sub = VectorSubvector(phase_density, sg);
+    Subvector *rm_sub = VectorSubvector(region_map, sg);
+
+    int ix = SubgridIX(subgrid) - 1;
+    int iy = SubgridIY(subgrid) - 1;
+    int iz = SubgridIZ(subgrid) - 1;
+    int nx = SubgridNX(subgrid) + 2;
+    int ny = SubgridNY(subgrid) + 2;
+    int nz = SubgridNZ(subgrid) + 2;
+    int r = SubgridRX(subgrid);
+
+    double *prdat = SubvectorData(pr_sub);
+    double *ppdat = SubvectorData(pp_sub);
+    double *pddat = SubvectorData(pd_sub);
+    double *rmdata = SubvectorData(rm_sub);
+
+    if (fcn == CALCFCN)
+    {
+      GrGeomInLoop(i, j, k, gr_domain, r, ix, iy, iz, nx, ny, nz,
+      {
+        int ipr = SubvectorEltIndex(pr_sub, i, j, k);
+        int ipp = SubvectorEltIndex(pp_sub, i, j, k);
+        int ipd = SubvectorEltIndex(pd_sub, i, j, k);
+        int irm = SubvectorEltIndex(rm_sub, i, j, k);
+        int ir = (int)rmdata[irm] - 1;
+        prdat[ipr] = 0.0;
+
+        if (ir >= 0 && ir < data->num_regions)
+        {
+          if (ppdat[ipp] >= 0.0)
+            prdat[ipr] = 1.0;
+          else if (data->lookup_tables[ir] &&
+                   data->lookup_tables[ir]->interpolation_method == 1)
+          {
+            VanGTable *table = data->lookup_tables[ir];
+            double head = fabs(ppdat[ipp]) / (pddat[ipd] * gravity);
+            if (head < fabs(table->min_pressure_head))
+            {
+              int pt = (int)floor(head / table->interval);
+              prdat[ipr] = table->a[pt] + table->slope[pt] *
+                           (head - table->x[pt]);
+            }
+          }
+          else
+          {
+            double alpha = data->alphas[ir];
+            double n = data->ns[ir];
+            double m = 1.0e0 - (1.0e0 / n);
+            double head = fabs(ppdat[ipp]) / (pddat[ipd] * gravity);
+            double opahn = 1.0 + pow(alpha * head, n);
+            double ahnm1 = pow(alpha * head, n - 1);
+            prdat[ipr] = pow(1.0 - ahnm1 / pow(opahn, m), 2)
+                         / pow(opahn, m / 2);
+          }
+        }
+      });
+    }
+    else
+    {
+      GrGeomInLoop(i, j, k, gr_domain, r, ix, iy, iz, nx, ny, nz,
+      {
+        int ipr = SubvectorEltIndex(pr_sub, i, j, k);
+        int ipp = SubvectorEltIndex(pp_sub, i, j, k);
+        int ipd = SubvectorEltIndex(pd_sub, i, j, k);
+        int irm = SubvectorEltIndex(rm_sub, i, j, k);
+        int ir = (int)rmdata[irm] - 1;
+        prdat[ipr] = 0.0;
+
+        if (ir >= 0 && ir < data->num_regions && ppdat[ipp] < 0.0)
+        {
+          if (data->lookup_tables[ir] &&
+              data->lookup_tables[ir]->interpolation_method == 1)
+          {
+            VanGTable *table = data->lookup_tables[ir];
+            double head = fabs(ppdat[ipp]) / (pddat[ipd] * gravity);
+            if (head < fabs(table->min_pressure_head))
+            {
+              int pt = (int)floor(head / table->interval);
+              prdat[ipr] = table->a_der[pt] + table->slope_der[pt] *
+                           (head - table->x[pt]);
+            }
+          }
+          else
+          {
+            double alpha = data->alphas[ir];
+            double n = data->ns[ir];
+            double m = 1.0e0 - (1.0e0 / n);
+            double head = fabs(ppdat[ipp]) / (pddat[ipd] * gravity);
+            double opahn = 1.0 + pow(alpha * head, n);
+            double ahnm1 = pow(alpha * head, n - 1);
+            double coeff = 1.0 - ahnm1 * pow(opahn, -m);
+            prdat[ipr] = 2.0 * coeff / pow(opahn, m / 2) *
+                         ((n - 1) * pow(alpha * head, n - 2) * alpha *
+                          pow(opahn, -m) - ahnm1 * m *
+                          pow(opahn, -(m + 1)) * n * alpha * ahnm1) +
+                         pow(coeff, 2) * (m / 2) *
+                         pow(opahn, -(m + 2) / 2) * n * alpha * ahnm1;
+          }
+        }
+      });
+    }
+  }
+}
+
+/*--------------------------------------------------------------------------
  * PhaseRelPerm:
  *    This routine calculates relative permeabilities given a set of
  *    pressures.
@@ -421,6 +558,7 @@ void         PhaseRelPerm(
 {
   PFModule      *this_module = ThisPFModule;
   PublicXtra    *public_xtra = (PublicXtra*)PFModulePublicXtra(this_module);
+  InstanceXtra  *instance_xtra = (InstanceXtra*)PFModuleInstanceXtra(this_module);
 
   Grid          *grid = VectorGrid(phase_rel_perm);
 
@@ -460,6 +598,9 @@ void         PhaseRelPerm(
 
   BeginTiming(public_xtra->time_index);
 
+#ifdef PARFLOW_HAVE_CUDA
+  pf_cuda_defer_sync = 1;
+#endif
 
   /* Initialize relative permeabilities to 0.0 */
   InitVectorAll(phase_rel_perm, 0.0);
@@ -567,6 +708,7 @@ void         PhaseRelPerm(
     case 1: /* Van Genuchten relative permeability */
     {
       int data_from_file;
+      int fused = 0;
       double  *alphas, *ns;
 
       Vector  *n_values, *alpha_values;
@@ -578,6 +720,53 @@ void         PhaseRelPerm(
       alphas = (dummy1->alphas);
       ns = (dummy1->ns);
       data_from_file = (dummy1->data_from_file);
+
+#ifdef PARFLOW_HAVE_CUDA
+      if (instance_xtra->region_map_enabled && data_from_file == 0)
+      {
+        fused = 1;
+        for (ir = 0; ir < dummy1->num_regions; ir++)
+        {
+          if (dummy1->lookup_tables[ir] &&
+              dummy1->lookup_tables[ir]->interpolation_method != 1)
+            fused = 0;
+        }
+
+        if (fused && !instance_xtra->region_map_ready)
+        {
+          instance_xtra->region_map =
+            NewVectorType(grid, 1, 1, vector_cell_centered);
+          InitVectorAll(instance_xtra->region_map, 0.0);
+
+          for (ir = 0; ir < dummy1->num_regions; ir++)
+          {
+            gr_solid = ProblemDataGrSolid(problem_data, region_indices[ir]);
+            ForSubgridI(sg, subgrids)
+            {
+              subgrid = SubgridArraySubgrid(subgrids, sg);
+              Subvector *rm_sub = VectorSubvector(instance_xtra->region_map, sg);
+              int rmap = SubgridRX(subgrid);
+              int rix = SubgridIX(subgrid);
+              int riy = SubgridIY(subgrid);
+              int riz = SubgridIZ(subgrid);
+              int rnx = SubgridNX(subgrid);
+              int rny = SubgridNY(subgrid);
+              int rnz = SubgridNZ(subgrid);
+              double *rmdata = SubvectorData(rm_sub);
+
+              GrGeomInLoop(i, j, k, gr_solid, rmap, rix, riy, riz,
+                           rnx, rny, rnz,
+              {
+                int irm = SubvectorEltIndex(rm_sub, i, j, k);
+                rmdata[irm] = (double)(ir + 1);
+              });
+            }
+          }
+          CUDA_ERR(cudaStreamSynchronize(0));
+          instance_xtra->region_map_ready = 1;
+        }
+      }
+#endif
 
       /* Compute rel perms for Dirichlet boundary conditions */
       if (data_from_file == 0)  /* alphas and ns given by region */
@@ -1024,7 +1213,15 @@ void         PhaseRelPerm(
       }         /* End if data_from_file */
 
       /* Compute rel. perms. on interior */
-      if (data_from_file == 0)  /* alphas and ns given by region */
+#ifdef PARFLOW_HAVE_CUDA
+      if (fused)
+      {
+        PhaseRelPermFusedInterior(phase_rel_perm, phase_pressure, phase_density,
+                                  gravity, problem_data, dummy1, instance_xtra,
+                                  instance_xtra->region_map, fcn);
+      }
+#endif
+      if (data_from_file == 0 && !fused)  /* alphas and ns given by region */
       {
         for (ir = 0; ir < num_regions; ir++)
         {
@@ -1681,6 +1878,11 @@ void         PhaseRelPerm(
     }        /* End case 4 */
   }          /* End switch */
 
+#ifdef PARFLOW_HAVE_CUDA
+  CUDA_ERR(cudaStreamSynchronize(0));
+  pf_cuda_defer_sync = 0;
+#endif
+
   /*-----------------------------------------------------------------------
    * End timing
    *-----------------------------------------------------------------------*/
@@ -1715,6 +1917,7 @@ PFModule  *PhaseRelPermInitInstanceXtra(
   {
     /* set new data */
     (instance_xtra->grid) = grid;
+    instance_xtra->region_map_enabled = GetIntDefault("Phase.RelPerm.RegionMap", 0);
 
     /* Use a spatially varying field */
     if (public_xtra->type == 1)
@@ -1735,6 +1938,7 @@ PFModule  *PhaseRelPermInitInstanceXtra(
         handle = InitVectorUpdate(dummy1->n_values, VectorUpdateAll);
         FinalizeVectorUpdate(handle);
       }
+
     }
   }
 
@@ -1760,6 +1964,11 @@ void  PhaseRelPermFreeInstanceXtra()
 
   if (instance_xtra)
   {
+    if (instance_xtra->region_map)
+    {
+      FreeVector(instance_xtra->region_map);
+      instance_xtra->region_map = NULL;
+    }
     switch ((public_xtra->type))
     {
       case 1:
