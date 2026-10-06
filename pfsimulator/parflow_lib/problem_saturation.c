@@ -46,6 +46,13 @@ typedef struct {
   Grid    *grid;
 
   double  *temp_data;
+
+#ifdef PARFLOW_HAVE_CUDA
+  /* Optional cached region labels for CUDA interior evaluation. */
+  Vector *region_map;
+  int region_map_ready;
+  int region_map_enabled;
+#endif
 } InstanceXtra;
 
 typedef struct {
@@ -100,6 +107,85 @@ typedef struct {
 } Type5;                      /* Spatially varying field over entire domain
                                * read from a file */
 
+#ifdef PARFLOW_HAVE_CUDA
+/* Build saturation values in one domain traversal after region labels are
+ * cached.  The original region-by-region path remains the fallback. */
+static void SaturationFusedVG(
+                             Vector *phase_saturation,
+                             Vector *phase_pressure,
+                             Vector *phase_density,
+                             double gravity,
+                             ProblemData *problem_data,
+                             Type1 *data,
+                             Vector *region_map,
+                             int fcn)
+{
+  Grid *grid = VectorGrid(phase_saturation);
+  GrGeomSolid *gr_domain = ProblemDataGrDomain(problem_data);
+  SubgridArray *subgrids = GridSubgrids(grid);
+  int sg;
+  int i, j, k;
+
+  ForSubgridI(sg, subgrids)
+  {
+    Subgrid *subgrid = SubgridArraySubgrid(subgrids, sg);
+    Subvector *ps_sub = VectorSubvector(phase_saturation, sg);
+    Subvector *pp_sub = VectorSubvector(phase_pressure, sg);
+    Subvector *pd_sub = VectorSubvector(phase_density, sg);
+    Subvector *rm_sub = VectorSubvector(region_map, sg);
+
+    int ix = SubgridIX(subgrid);
+    int iy = SubgridIY(subgrid);
+    int iz = SubgridIZ(subgrid);
+    int nx = SubgridNX(subgrid);
+    int ny = SubgridNY(subgrid);
+    int nz = SubgridNZ(subgrid);
+    int r = SubgridRX(subgrid);
+
+    double *psdat = SubvectorData(ps_sub);
+    double *ppdat = SubvectorData(pp_sub);
+    double *pddat = SubvectorData(pd_sub);
+    double *rmdata = SubvectorData(rm_sub);
+
+    GrGeomInLoop(i, j, k, gr_domain, r, ix, iy, iz, nx, ny, nz,
+    {
+      int ips = SubvectorEltIndex(ps_sub, i, j, k);
+      int ipp = SubvectorEltIndex(pp_sub, i, j, k);
+      int ipd = SubvectorEltIndex(pd_sub, i, j, k);
+      int irm = SubvectorEltIndex(rm_sub, i, j, k);
+      int ir = (int)rmdata[irm] - 1;
+
+      psdat[ips] = 0.0;
+      if (ir >= 0 && ir < data->num_regions)
+      {
+        double alpha = data->alphas[ir];
+        double n = data->ns[ir];
+        double m = 1.0e0 - (1.0e0 / n);
+        double s_res = data->s_ress[ir];
+        double s_dif = data->s_difs[ir];
+
+        if (fcn == CALCFCN)
+        {
+          if (ppdat[ipp] >= 0.0)
+            psdat[ips] = s_dif + s_res;
+          else
+          {
+            double head = fabs(ppdat[ipp]) / (pddat[ipd] * gravity);
+            psdat[ips] = s_dif / pow(1.0 + pow(alpha * head, n), m) + s_res;
+          }
+        }
+        else if (ppdat[ipp] < 0.0)
+        {
+          double head = fabs(ppdat[ipp]) / (pddat[ipd] * gravity);
+          psdat[ips] = (m * n * alpha * pow(alpha * head, n - 1)) * s_dif
+                       / pow(1.0 + pow(alpha * head, n), m + 1);
+        }
+      }
+    });
+  }
+}
+#endif
+
 /*--------------------------------------------------------------------------
  * Saturation:
  *    This routine returns a Vector of saturations based on pressures.
@@ -119,6 +205,7 @@ void     Saturation(
 {
   PFModule      *this_module = ThisPFModule;
   PublicXtra    *public_xtra = (PublicXtra*)PFModulePublicXtra(this_module);
+  InstanceXtra  *instance_xtra = (InstanceXtra*)PFModuleInstanceXtra(this_module);
 
   Type0         *dummy0;
   Type1         *dummy1;
@@ -234,6 +321,49 @@ void     Saturation(
       s_ress = (dummy1->s_ress);
       s_difs = (dummy1->s_difs);
       data_from_file = (dummy1->data_from_file);
+
+#ifdef PARFLOW_HAVE_CUDA
+      if (instance_xtra->region_map_enabled && data_from_file == 0)
+      {
+        if (!instance_xtra->region_map_ready)
+        {
+          instance_xtra->region_map =
+            NewVectorType(grid, 1, 1, vector_cell_centered);
+          InitVectorAll(instance_xtra->region_map, 0.0);
+
+          for (ir = 0; ir < num_regions; ir++)
+          {
+            gr_solid = ProblemDataGrSolid(problem_data, region_indices[ir]);
+            ForSubgridI(sg, subgrids)
+            {
+              subgrid = SubgridArraySubgrid(subgrids, sg);
+              ps_sub = VectorSubvector(instance_xtra->region_map, sg);
+              ix = SubgridIX(subgrid);
+              iy = SubgridIY(subgrid);
+              iz = SubgridIZ(subgrid);
+              nx = SubgridNX(subgrid);
+              ny = SubgridNY(subgrid);
+              nz = SubgridNZ(subgrid);
+              r = SubgridRX(subgrid);
+              psdat = SubvectorData(ps_sub);
+
+              GrGeomInLoop(i, j, k, gr_solid, r, ix, iy, iz, nx, ny, nz,
+              {
+                int irm = SubvectorEltIndex(ps_sub, i, j, k);
+                psdat[irm] = (double)(ir + 1);
+              });
+            }
+          }
+          CUDA_ERR(cudaStreamSynchronize(0));
+          instance_xtra->region_map_ready = 1;
+        }
+
+        SaturationFusedVG(phase_saturation, phase_pressure, phase_density,
+                          gravity, problem_data, dummy1,
+                          instance_xtra->region_map, fcn);
+        break;
+      }
+#endif
 
       if (data_from_file == 0) /* Soil parameters given by region */
       {
@@ -708,6 +838,14 @@ PFModule  *SaturationInitInstanceXtra(
 
     /* set new data */
     (instance_xtra->grid) = grid;
+#ifdef PARFLOW_HAVE_CUDA
+    if (instance_xtra->region_map)
+      FreeVector(instance_xtra->region_map);
+    instance_xtra->region_map = NULL;
+    instance_xtra->region_map_ready = 0;
+    instance_xtra->region_map_enabled =
+      GetIntDefault("Phase.Saturation.RegionMap", 0);
+#endif
 
     /* Uses a spatially varying field */
     if (public_xtra->type == 1)
@@ -780,6 +918,10 @@ void  SaturationFreeInstanceXtra()
 
   if (instance_xtra)
   {
+#ifdef PARFLOW_HAVE_CUDA
+    if (instance_xtra->region_map)
+      FreeVector(instance_xtra->region_map);
+#endif
     if (public_xtra->type == 1)
     {
       Type1* dummy1 = (Type1*)(public_xtra->data);
