@@ -1591,23 +1591,42 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
         vel_idx = vz_l;
 
         dir = -1;
-        sep = dz * Mean(z_mult_dat[ip], z_mult_dat[ip - sz_p]);                      //RMM
+        if (spherical_accumulation)
+        {
+          int iradius = SubvectorEltIndex(radius_sub, i, j, k);
+          int izmult = SubvectorEltIndex(z_mult_sub, i, j, k);
+          double thickness = dz * z_mult_dat[izmult];
+          double radius_bottom = radius_dat[iradius] - 0.5 * thickness;
+          double refinement = pow(2.0, r);
+          double delta_lambda = longitude_width / refinement;
+          double delta_phi = latitude_width / refinement;
+          double phi_center = latitude_origin + (j + 0.5) * delta_phi;
+          double latitude_factor = 2.0 * cos(phi_center) * sin(0.5 * delta_phi);
+          h = radius_bottom * radius_bottom * delta_lambda * latitude_factor;
+          /* The below-domain cell is not an internal-loop center, so this
+           * negative boundary face has no old integrated flux to remove. */
+          u_old = 0.0;
+        }
+        else
+        {
+          sep = dz * Mean(z_mult_dat[ip], z_mult_dat[ip - sz_p]);                      //RMM
 
-        lower_cond = (pp[ip - sz_p] / sep)
-                     - (z_mult_dat[ip - sz_p] / (z_mult_dat[ip] + z_mult_dat[ip - sz_p])) * dp[ip - sz_p] * gravity *
-                     z_dir_g;
+          lower_cond = (pp[ip - sz_p] / sep)
+                       - (z_mult_dat[ip - sz_p] / (z_mult_dat[ip] + z_mult_dat[ip - sz_p])) * dp[ip - sz_p] * gravity *
+                       z_dir_g;
 
-        upper_cond = (pp[ip] / sep) + (z_mult_dat[ip] / (z_mult_dat[ip] + z_mult_dat[ip - sz_p])) * dp[ip] * gravity *
-                     z_dir_g;
+          upper_cond = (pp[ip] / sep) + (z_mult_dat[ip] / (z_mult_dat[ip] + z_mult_dat[ip - sz_p])) * dp[ip] * gravity *
+                       z_dir_g;
 
-        diff = lower_cond - upper_cond;
-        u_old = h
-                * PMeanDZ(permzp[ip - sz_p], permzp[ip],
-                          z_mult_dat[ip - sz_p], z_mult_dat[ip])
-                * diff
-                * RPMean(lower_cond, upper_cond,
-                         rpp[ip - sz_p] * dp[ip - sz_p], rpp[ip] * dp[ip])
-                / viscosity;
+          diff = lower_cond - upper_cond;
+          u_old = h
+                  * PMeanDZ(permzp[ip - sz_p], permzp[ip],
+                            z_mult_dat[ip - sz_p], z_mult_dat[ip])
+                  * diff
+                  * RPMean(lower_cond, upper_cond,
+                           rpp[ip - sz_p] * dp[ip - sz_p], rpp[ip] * dp[ip])
+                  / viscosity;
+        }
         u_new = h;
       }),
                            FACE(FrontFace,
