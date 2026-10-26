@@ -41,7 +41,7 @@ typedef struct {
   int time_index;
   double SpinupDampP1;      // NBE
   double SpinupDampP2;      // NBE
-  int spherical_accumulation; /* Experimental: storage accumulation only. */
+  int spherical_accumulation; /* Experimental: storage and source volumes only. */
   int tfgupwind;           //@RMM added for TFG formulation switch
   SeepageLookup seepage;
 } PublicXtra;
@@ -326,7 +326,7 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
                                                            gravity, problem_data, CALCFCN));
 
 
-  /* Experimental geometry hook: only the two storage accumulation terms are converted.
+  /* Experimental geometry hook: only storage and source volumes are converted.
    * This is NOT yet a complete spherical-coordinate flow solver.
    * Background X/Y and DX/DY are longitude/latitude in degrees when enabled.
    * The radius vector must be populated before evaluating this function. */
@@ -558,6 +558,10 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
   {
     subgrid = GridSubgrid(grid, is);
 
+    Subvector *radius_sub = spherical_accumulation
+                            ? VectorSubvector(radius_center, is) : NULL;
+    double *radius_dat = radius_sub != NULL ? SubvectorData(radius_sub) : NULL;
+
     s_sub = VectorSubvector(source, is);
     f_sub = VectorSubvector(fval, is);
     et_sub = VectorSubvector(evap_trans, is);
@@ -612,7 +616,29 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
       double del_x_slope = 1.0;
       double del_y_slope = 1.0;
 
+      if (spherical_accumulation)
+      {
+        int iradius = SubvectorEltIndex(radius_sub, i, j, k);
+        int izmult = SubvectorEltIndex(z_mult_sub, i, j, k);
+        double radius = radius_dat[iradius];
+        double thickness = dz * z_mult_dat[izmult];
+        /* Same shell volume as both storage accumulation terms above. */
+        double refinement = pow(2.0, r);
+        double delta_lambda = longitude_width / refinement;
+        double delta_phi = latitude_width / refinement;
+        double phi_south = latitude_origin + j * delta_phi;
+        double phi_north = phi_south + delta_phi;
+        double latitude_factor = 2.0 * cos(0.5 * (phi_north + phi_south))
+                                 * sin(0.5 * delta_phi);
+        double cell_volume = thickness * (radius * radius + thickness * thickness / 12.0)
+                             * delta_lambda * latitude_factor;
+        fp[ip] -= cell_volume * dt * (sp[ip] + et[ip]);
+      }
+      else
+      {
+        /* Preserve the original Cartesian calculation. */
       fp[ip] -= vol * del_x_slope * del_y_slope * z_mult_dat[ip] * dt * (sp[ip] + et[ip]);
+      }
     });
   }
 
@@ -2546,7 +2572,7 @@ PFModule   *NlFunctionEvalNewPublicXtra(char *name)
   public_xtra = ctalloc(PublicXtra, 1);
 
   /* Integer switch, default off. Radius input and the remaining spherical
-   * flux/source/Jacobian terms are intentionally not implemented yet. */
+   * flux/Jacobian terms are intentionally not implemented yet. */
   public_xtra->spherical_accumulation =
     GetIntDefault("Solver.Experimental.SphericalAccumulation", 0);
 
