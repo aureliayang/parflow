@@ -179,6 +179,9 @@ typedef struct {
 
   /* @RMM variable dz  */
   Vector *dz_mult;
+  /* Optional static cell-center radius [m], owned by ProblemData.
+   * NULL until the spherical geometry input is supplied. */
+  Vector *radius_center;
   Vector *rsz;
 } ProblemData;
 
@@ -302,6 +305,7 @@ typedef struct {
 #define ProblemDataMannings(problem_data)       ((problem_data)->mann)   //sk
 #define ProblemDataSSlopeX(problem_data)        ((problem_data)->x_sslope)   //RMM
 #define ProblemDataSSlopeY(problem_data)        ((problem_data)->y_sslope)   //RMM
+#define ProblemDataRadiusCenter(problem_data) ((problem_data)->radius_center)
 #define ProblemDataZmult(problem_data)          ((problem_data)->dz_mult)    //RMM
 #define ProblemDataRealSpaceZ(problem_data)     ((problem_data)->rsz)
 /*--------------------------------------------------------------------------

@@ -41,6 +41,7 @@ typedef struct {
   int time_index;
   double SpinupDampP1;      // NBE
   double SpinupDampP2;      // NBE
+  int spherical_accumulation; /* Experimental: porosity accumulation only. */
   int tfgupwind;           //@RMM added for TFG formulation switch
   SeepageLookup seepage;
 } PublicXtra;
@@ -325,11 +326,34 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
                                                            gravity, problem_data, CALCFCN));
 
 
+  /* Experimental geometry hook: only this accumulation term is converted.
+   * This is NOT yet a complete spherical-coordinate flow solver.
+   * Background X/Y and DX/DY are longitude/latitude in degrees when enabled.
+   * The radius vector must be populated before evaluating this function. */
+  int spherical_accumulation = public_xtra->spherical_accumulation;
+  Vector *radius_center = ProblemDataRadiusCenter(problem_data);
+  double radians_per_degree = acos(-1.0) / 180.0;
+  double longitude_width = 0.0;
+  double latitude_origin = 0.0;
+  double latitude_width = 0.0;
+  if (spherical_accumulation)
+  {
+    if (radius_center == NULL)
+      InputError("Spherical accumulation requires a populated cell-center radius vector");
+    longitude_width = BackgroundDX(GlobalsBackground) * radians_per_degree;
+    latitude_origin = BackgroundY(GlobalsBackground) * radians_per_degree;
+    latitude_width = BackgroundDY(GlobalsBackground) * radians_per_degree;
+  }
+
   /* Calculate accumulation terms for the function values */
 
   ForSubgridI(is, GridSubgrids(grid))
   {
     subgrid = GridSubgrid(grid, is);
+
+    Subvector *radius_sub = spherical_accumulation
+                            ? VectorSubvector(radius_center, is) : NULL;
+    double *radius_dat = radius_sub != NULL ? SubvectorData(radius_sub) : NULL;
 
     d_sub = VectorSubvector(density, is);
     od_sub = VectorSubvector(old_density, is);
@@ -401,7 +425,32 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
       double del_x_slope = 1.0;
       double del_y_slope = 1.0;
 
-      fp[ip] = (sp[ip] * dp[ip] - osp[ip] * odp[ip]) * pop[ipo] * vol * del_x_slope * del_y_slope * z_mult_dat[ip];
+      if (spherical_accumulation)
+      {
+        int iradius = SubvectorEltIndex(radius_sub, i, j, k);
+        int izmult = SubvectorEltIndex(z_mult_sub, i, j, k);
+        double radius = radius_dat[iradius];
+        double thickness = dz * z_mult_dat[izmult];
+        /* j is a global index; r is the grid refinement exponent, NOT radius. */
+        double refinement = pow(2.0, r);
+        double delta_lambda = longitude_width / refinement;
+        double delta_phi = latitude_width / refinement;
+        double phi_south = latitude_origin + j * delta_phi;
+        double phi_north = phi_south + delta_phi;
+        /* r_top = radius + thickness/2; r_bottom = radius - thickness/2.
+         * (r_top^3-r_bottom^3)/3 = thickness*(radius^2+thickness^2/12).
+         * The sine difference is also evaluated without subtracting close values. */
+        double latitude_factor = 2.0 * cos(0.5 * (phi_north + phi_south))
+                                 * sin(0.5 * delta_phi);
+        double cell_volume = thickness * (radius * radius + thickness * thickness / 12.0)
+                             * delta_lambda * latitude_factor;
+        fp[ip] = (sp[ip] * dp[ip] - osp[ip] * odp[ip]) * pop[ipo] * cell_volume;
+      }
+      else
+      {
+        /* Preserve the original Cartesian calculation. */
+        fp[ip] = (sp[ip] * dp[ip] - osp[ip] * odp[ip]) * pop[ipo] * vol * del_x_slope * del_y_slope * z_mult_dat[ip];
+      }
     });
   }
 
@@ -2468,6 +2517,11 @@ PFModule   *NlFunctionEvalNewPublicXtra(char *name)
 
 
   public_xtra = ctalloc(PublicXtra, 1);
+
+  /* Integer switch, default off. Radius input and the remaining spherical
+   * residual/Jacobian terms are intentionally not implemented yet. */
+  public_xtra->spherical_accumulation =
+    GetIntDefault("Solver.Experimental.SphericalAccumulation", 0);
 
 /* These parameters dampen the transition/switching into overland flow to speedup
  * the spinup process. */
