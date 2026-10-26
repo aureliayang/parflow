@@ -425,6 +425,8 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
       double del_x_slope = 1.0;
       double del_y_slope = 1.0;
 
+      /* Default to the original Cartesian volume; override geometry only. */
+      double cell_volume = vol * del_x_slope * del_y_slope * z_mult_dat[ip];
       if (spherical_accumulation)
       {
         int iradius = SubvectorEltIndex(radius_sub, i, j, k);
@@ -442,15 +444,11 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
          * The sine difference is also evaluated without subtracting close values. */
         double latitude_factor = 2.0 * cos(0.5 * (phi_north + phi_south))
                                  * sin(0.5 * delta_phi);
-        double cell_volume = thickness * (radius * radius + thickness * thickness / 12.0)
+        cell_volume = thickness * (radius * radius + thickness * thickness / 12.0)
                              * delta_lambda * latitude_factor;
-        fp[ip] = (sp[ip] * dp[ip] - osp[ip] * odp[ip]) * pop[ipo] * cell_volume;
       }
-      else
-      {
-        /* Preserve the original Cartesian calculation. */
-        fp[ip] = (sp[ip] * dp[ip] - osp[ip] * odp[ip]) * pop[ipo] * vol * del_x_slope * del_y_slope * z_mult_dat[ip];
-      }
+
+      fp[ip] = (sp[ip] * dp[ip] - osp[ip] * odp[ip]) * pop[ipo] * cell_volume;
     });
   }
 
@@ -521,6 +519,8 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
       double del_x_slope = 1.0;
       double del_y_slope = 1.0;
 
+      /* Default to the original Cartesian volume; override geometry only. */
+      double cell_volume = vol * del_x_slope * del_y_slope * z_mult_dat[ip];
       if (spherical_accumulation)
       {
         int iradius = SubvectorEltIndex(radius_sub, i, j, k);
@@ -535,16 +535,12 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
         double phi_north = phi_south + delta_phi;
         double latitude_factor = 2.0 * cos(0.5 * (phi_north + phi_south))
                                  * sin(0.5 * delta_phi);
-        double cell_volume = thickness * (radius * radius + thickness * thickness / 12.0)
+        cell_volume = thickness * (radius * radius + thickness * thickness / 12.0)
                              * delta_lambda * latitude_factor;
-        fp[ip] += ss[ip] * cell_volume
-                  * (pp[ip] * sp[ip] * dp[ip] - opp[ip] * osp[ip] * odp[ip]);
       }
-      else
-      {
-        /* Preserve the original Cartesian calculation. */
-        fp[ip] += ss[ip] * vol * del_x_slope * del_y_slope * z_mult_dat[ip] * (pp[ip] * sp[ip] * dp[ip] - opp[ip] * osp[ip] * odp[ip]);
-      }
+
+      fp[ip] += ss[ip] * cell_volume
+                * (pp[ip] * sp[ip] * dp[ip] - opp[ip] * osp[ip] * odp[ip]);
     });
   }
 
@@ -616,6 +612,8 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
       double del_x_slope = 1.0;
       double del_y_slope = 1.0;
 
+      /* Default to the original Cartesian volume; override geometry only. */
+      double cell_volume = vol * del_x_slope * del_y_slope * z_mult_dat[ip];
       if (spherical_accumulation)
       {
         int iradius = SubvectorEltIndex(radius_sub, i, j, k);
@@ -630,15 +628,11 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
         double phi_north = phi_south + delta_phi;
         double latitude_factor = 2.0 * cos(0.5 * (phi_north + phi_south))
                                  * sin(0.5 * delta_phi);
-        double cell_volume = thickness * (radius * radius + thickness * thickness / 12.0)
+        cell_volume = thickness * (radius * radius + thickness * thickness / 12.0)
                              * delta_lambda * latitude_factor;
-        fp[ip] -= cell_volume * dt * (sp[ip] + et[ip]);
       }
-      else
-      {
-        /* Preserve the original Cartesian calculation. */
-      fp[ip] -= vol * del_x_slope * del_y_slope * z_mult_dat[ip] * dt * (sp[ip] + et[ip]);
-      }
+
+      fp[ip] -= cell_volume * dt * (sp[ip] + et[ip]);
     });
   }
 
