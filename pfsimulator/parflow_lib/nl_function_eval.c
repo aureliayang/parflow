@@ -41,7 +41,7 @@ typedef struct {
   int time_index;
   double SpinupDampP1;      // NBE
   double SpinupDampP2;      // NBE
-  int spherical_accumulation; /* Experimental: storage and source volumes only. */
+  int spherical_accumulation; /* Experimental spherical residual geometry. */
   int tfgupwind;           //@RMM added for TFG formulation switch
   SeepageLookup seepage;
 } PublicXtra;
@@ -326,7 +326,7 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
                                                            gravity, problem_data, CALCFCN));
 
 
-  /* Experimental geometry hook: only storage and source volumes are converted.
+  /* Experimental geometry hook: storage/source volumes and internal face fluxes are converted.
    * This is NOT yet a complete spherical-coordinate flow solver.
    * Background X/Y and DX/DY are longitude/latitude in degrees when enabled.
    * The radius vector must be populated before evaluating this function. */
@@ -724,6 +724,12 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
   {
     subgrid = GridSubgrid(grid, is);
 
+    /* Radius and thickness ghosts must be populated just like pressure ghosts.
+     * The loop below also visits the negative-side domain ghost cells. */
+    Subvector *radius_sub = spherical_accumulation
+                            ? VectorSubvector(radius_center, is) : NULL;
+    double *radius_dat = radius_sub != NULL ? SubvectorData(radius_sub) : NULL;
+
     /* velocity vectors jjb */
     vx_sub = VectorSubvector(x_velocity, is);
     vy_sub = VectorSubvector(y_velocity, is);
@@ -820,6 +826,43 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
       double del_x_slope = 1.0;
       double del_y_slope = 1.0;
 
+      /* Cartesian defaults. Each face uses the same area for flow and velocity. */
+      double distance_x = dx;
+      double distance_y = dy;
+      double distance_z = dz * Mean(z_mult_dat[ip], z_mult_dat[ip + sz_p]);
+      double area_right = ffx * z_mult_dat[ip] * del_y_slope;
+      double area_front = ffy * z_mult_dat[ip] * del_x_slope;
+      double area_upper = ffz * del_x_slope * del_y_slope;
+
+      if (spherical_accumulation)
+      {
+        int iradius = SubvectorEltIndex(radius_sub, i, j, k);
+        int iradius_top = SubvectorEltIndex(radius_sub, i, j, k + 1);
+        int izmult = SubvectorEltIndex(z_mult_sub, i, j, k);
+        double radius = radius_dat[iradius];
+        double thickness = dz * z_mult_dat[izmult];
+        double refinement = pow(2.0, r);
+        double delta_lambda = longitude_width / refinement;
+        double delta_phi = latitude_width / refinement;
+        double phi_south = latitude_origin + j * delta_phi;
+        double phi_north = phi_south + delta_phi;
+        double phi_center = 0.5 * (phi_south + phi_north);
+        double radius_top = radius + 0.5 * thickness;
+        double latitude_factor = 2.0 * cos(phi_center) * sin(0.5 * delta_phi);
+
+        /* Local spherical-shell geometry, retaining the existing TFG flux
+         * approximation. Horizontal distances are arc lengths, not 3-D chords.
+         * radius*thickness = (r_top^2-r_bottom^2)/2, evaluated stably.
+         * Geometry is computed once by the positive-face owner and the same
+         * integrated flow is added with opposite signs to the two residuals. */
+        distance_x = radius * cos(phi_center) * delta_lambda;
+        distance_y = radius * delta_phi;
+        distance_z = radius_dat[iradius_top] - radius;
+        area_right = radius * thickness * delta_phi;
+        area_front = radius * thickness * cos(phi_north) * delta_lambda;
+        area_upper = radius_top * radius_top * delta_lambda * latitude_factor;
+      }
+
       double x_dir_g = NAN;
       double x_dir_g_c = NAN;
       double y_dir_g = NAN;
@@ -864,11 +907,11 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
        * diff_l >= 0 implies flow goes left to right */
 
       double diff_l = pp[ip] - pp[ip + 1];
-      double updir = (diff_l / dx) * x_dir_g_c - x_dir_g;
+      double updir = (diff_l / distance_x) * x_dir_g_c - x_dir_g;
 
-      double u_right = z_mult_dat[ip] * ffx * del_y_slope * PMean(pp[ip], pp[ip + 1],
-                                                                  permxp[ip], permxp[ip + 1])
-                       * (diff_l / (dx * del_x_slope)) * x_dir_g_c
+      double u_right = area_right * PMean(pp[ip], pp[ip + 1],
+                                           permxp[ip], permxp[ip + 1])
+                       * (diff_l / (distance_x * del_x_slope)) * x_dir_g_c
                        * RPMean(updir, 0.0,
                                 rpp[ip] * dp[ip],
                                 rpp[ip + 1] * dp[ip + 1])
@@ -879,8 +922,8 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
        * upwind on pressure is currently implemented
        * Sx < 0 implies flow goes left to right */
 
-      u_right += z_mult_dat[ip] * ffx * del_y_slope * PMean(pp[ip], pp[ip + 1],
-                                                            permxp[ip], permxp[ip + 1])
+      u_right += area_right * PMean(pp[ip], pp[ip + 1],
+                                   permxp[ip], permxp[ip + 1])
                  * (-x_dir_g)
                  * RPMean(updir, 0.0, rpp[ip] * dp[ip],
                           rpp[ip + 1] * dp[ip + 1])
@@ -890,11 +933,11 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
       /* Calculate front face velocity.
        * diff_l >= 0 implies flow goes back to front */
       diff_l = pp[ip] - pp[ip + sy_p];
-      updir = (diff_l / dy) * y_dir_g_c - y_dir_g;
+      updir = (diff_l / distance_y) * y_dir_g_c - y_dir_g;
 
-      double u_front = z_mult_dat[ip] * ffy * del_x_slope
+      double u_front = area_front
                        * PMean(pp[ip], pp[ip + sy_p], permyp[ip], permyp[ip + sy_p])
-                       * (diff_l / (dy * del_y_slope)) * y_dir_g_c
+                       * (diff_l / (distance_y * del_y_slope)) * y_dir_g_c
                        * RPMean(updir, 0.0,
                                 rpp[ip] * dp[ip],
                                 rpp[ip + sy_p] * dp[ip + sy_p])
@@ -906,7 +949,7 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
        * Sy < 0 implies flow goes from left to right
        */
 
-      u_front += z_mult_dat[ip] * ffy * del_x_slope
+      u_front += area_front
                  * PMean(pp[ip], pp[ip + sy_p], permyp[ip], permyp[ip + sy_p])
                  * (-y_dir_g)
                  * RPMean(updir, 0.0, rpp[ip] * dp[ip],
@@ -916,7 +959,7 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
       /* Calculate upper face velocity.
        * diff_l >= 0 implies flow goes lower to upper
        */
-      double sep_l = dz * (Mean(z_mult_dat[ip], z_mult_dat[ip + sz_p]));
+      double sep_l = distance_z;
 
 
       double lower_cond_l = pp[ip] / sep_l
@@ -930,7 +973,7 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
 
       diff_l = (lower_cond_l - upper_cond_l);
 
-      double u_upper = ffz * del_x_slope * del_y_slope
+      double u_upper = area_upper
                        * PMeanDZ(permzp[ip], permzp[ip + sz_p], z_mult_dat[ip], z_mult_dat[ip + sz_p])
                        * diff_l
                        * RPMean(lower_cond_l, upper_cond_l, rpp[ip] * dp[ip],
@@ -945,9 +988,9 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
       u_upper = u_upper * FBz_dat[ip];
 
       /* velocity data jjb */
-      vx[vxi] = u_right / (ffx * z_mult_dat[ip] * del_y_slope);
-      vy[vyi] = u_front / (ffy * z_mult_dat[ip] * del_x_slope);
-      vz[vzi] = u_upper / (ffz * del_x_slope * del_y_slope);
+      vx[vxi] = u_right / area_right;
+      vy[vyi] = u_front / area_front;
+      vz[vzi] = u_upper / area_upper;
 
       PlusEquals(fp[ip], dt * (u_right + u_front + u_upper));
       PlusEquals(fp[ip + 1], -dt * u_right);
@@ -2572,7 +2615,7 @@ PFModule   *NlFunctionEvalNewPublicXtra(char *name)
   public_xtra = ctalloc(PublicXtra, 1);
 
   /* Integer switch, default off. Radius input and the remaining spherical
-   * flux/Jacobian terms are intentionally not implemented yet. */
+   * boundary/Jacobian terms are intentionally not implemented yet. */
   public_xtra->spherical_accumulation =
     GetIntDefault("Solver.Experimental.SphericalAccumulation", 0);
 
