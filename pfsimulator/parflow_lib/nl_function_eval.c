@@ -1419,22 +1419,39 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
         vel_idx = vx_l;
 
         dir = -1;
-        diff = pp[ip - 1] - pp[ip];
-        u_old = h
-                * PMean(pp[ip - 1], pp[ip],
-                        permxp[ip - 1], permxp[ip])
-                * (diff / dx * del_x_slope)
-                * RPMean(pp[ip - 1], pp[ip],
-                         rpp[ip - 1] * dp[ip - 1], rpp[ip] * dp[ip])
-                / viscosity;
+        if (spherical_accumulation)
+        {
+          int iradius = SubvectorEltIndex(radius_sub, i, j, k);
+          int izmult = SubvectorEltIndex(z_mult_sub, i, j, k);
+          double radius = radius_dat[iradius];
+          double thickness = dz * z_mult_dat[izmult];
+          double refinement = pow(2.0, r);
+          double delta_phi = latitude_width / refinement;
+          h = radius * thickness * delta_phi;
+          /* Positive faces were computed by the internal loop (including
+           * TFG, upwinding and flow barriers). Negative boundary faces had
+           * no domain cell on their outside to compute an old contribution. */
+          u_old = 0.0;
+        }
+        else
+        {
+          diff = pp[ip - 1] - pp[ip];
+          u_old = h
+                  * PMean(pp[ip - 1], pp[ip],
+                          permxp[ip - 1], permxp[ip])
+                  * (diff / dx * del_x_slope)
+                  * RPMean(pp[ip - 1], pp[ip],
+                           rpp[ip - 1] * dp[ip - 1], rpp[ip] * dp[ip])
+                  / viscosity;
 
-        u_old += h
-                 * PMean(pp[ip - 1], pp[ip],
-                         permxp[ip - 1], permxp[ip])
-                 * (-x_dir_g)
-                 * RPMean(pp[ip - 1], pp[ip], rpp[ip - 1] * dp[ip - 1],
-                          rpp[ip] * dp[ip])
-                 / viscosity;
+          u_old += h
+                   * PMean(pp[ip - 1], pp[ip],
+                           permxp[ip - 1], permxp[ip])
+                   * (-x_dir_g)
+                   * RPMean(pp[ip - 1], pp[ip], rpp[ip - 1] * dp[ip - 1],
+                            rpp[ip] * dp[ip])
+                   / viscosity;
+        }
         u_new = h;
       }),
                            FACE(RightFace,
@@ -1444,22 +1461,39 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
         vel_idx = vx_l + 1;
 
         dir = 1;
-        diff = pp[ip] - pp[ip + 1];
-        u_old = h
-                * PMean(pp[ip], pp[ip + 1],
-                        permxp[ip], permxp[ip + 1])
-                * (diff / dx * del_x_slope)
-                * RPMean(pp[ip], pp[ip + 1],
-                         rpp[ip] * dp[ip], rpp[ip + 1] * dp[ip + 1])
-                / viscosity;
+        if (spherical_accumulation)
+        {
+          int iradius = SubvectorEltIndex(radius_sub, i, j, k);
+          int izmult = SubvectorEltIndex(z_mult_sub, i, j, k);
+          double radius = radius_dat[iradius];
+          double thickness = dz * z_mult_dat[izmult];
+          double refinement = pow(2.0, r);
+          double delta_phi = latitude_width / refinement;
+          h = radius * thickness * delta_phi;
+          /* Positive faces were computed by the internal loop (including
+           * TFG, upwinding and flow barriers). Negative boundary faces had
+           * no domain cell on their outside to compute an old contribution. */
+          u_old = vel_vec[vel_idx] * h;
+        }
+        else
+        {
+          diff = pp[ip] - pp[ip + 1];
+          u_old = h
+                  * PMean(pp[ip], pp[ip + 1],
+                          permxp[ip], permxp[ip + 1])
+                  * (diff / dx * del_x_slope)
+                  * RPMean(pp[ip], pp[ip + 1],
+                           rpp[ip] * dp[ip], rpp[ip + 1] * dp[ip + 1])
+                  / viscosity;
 
-        u_old += h
-                 * PMean(pp[ip], pp[ip + 1],
-                         permxp[ip], permxp[ip + 1])
-                 * (-x_dir_g)
-                 * RPMean(pp[ip], pp[ip + 1], rpp[ip] * dp[ip],
-                          rpp[ip + 1] * dp[ip + 1])
-                 / viscosity;
+          u_old += h
+                   * PMean(pp[ip], pp[ip + 1],
+                           permxp[ip], permxp[ip + 1])
+                   * (-x_dir_g)
+                   * RPMean(pp[ip], pp[ip + 1], rpp[ip] * dp[ip],
+                            rpp[ip + 1] * dp[ip + 1])
+                   / viscosity;
+        }
         u_new = h;
       }),
                            FACE(DownFace,
@@ -1469,22 +1503,41 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
         vel_idx = vy_l;
 
         dir = -1;
-        diff = pp[ip - sy_p] - pp[ip];
-        u_old = h
-                * PMean(pp[ip - sy_p], pp[ip],
-                        permyp[ip - sy_p], permyp[ip])
-                * (diff / dy)
-                * RPMean(pp[ip - sy_p], pp[ip],
-                         rpp[ip - sy_p] * dp[ip - sy_p], rpp[ip] * dp[ip])
-                / viscosity;
+        if (spherical_accumulation)
+        {
+          int iradius = SubvectorEltIndex(radius_sub, i, j, k);
+          int izmult = SubvectorEltIndex(z_mult_sub, i, j, k);
+          double radius = radius_dat[iradius];
+          double thickness = dz * z_mult_dat[izmult];
+          double refinement = pow(2.0, r);
+          double delta_lambda = longitude_width / refinement;
+          double delta_phi = latitude_width / refinement;
+          double phi_face = latitude_origin + j * delta_phi;
+          h = radius * thickness * cos(phi_face) * delta_lambda;
+          /* Positive faces were computed by the internal loop (including
+           * TFG, upwinding and flow barriers). Negative boundary faces had
+           * no domain cell on their outside to compute an old contribution. */
+          u_old = 0.0;
+        }
+        else
+        {
+          diff = pp[ip - sy_p] - pp[ip];
+          u_old = h
+                  * PMean(pp[ip - sy_p], pp[ip],
+                          permyp[ip - sy_p], permyp[ip])
+                  * (diff / dy)
+                  * RPMean(pp[ip - sy_p], pp[ip],
+                           rpp[ip - sy_p] * dp[ip - sy_p], rpp[ip] * dp[ip])
+                  / viscosity;
 
-        u_old += h *
-                 PMean(pp[ip], pp[ip - sy_p], permyp[ip],
-                       permyp[ip - sy_p])
-                 * (-y_dir_g)
-                 * RPMean(pp[ip], pp[ip - sy_p], rpp[ip] * dp[ip],
-                          rpp[ip - sy_p] * dp[ip - sy_p])
-                 / viscosity;
+          u_old += h *
+                   PMean(pp[ip], pp[ip - sy_p], permyp[ip],
+                         permyp[ip - sy_p])
+                   * (-y_dir_g)
+                   * RPMean(pp[ip], pp[ip - sy_p], rpp[ip] * dp[ip],
+                            rpp[ip - sy_p] * dp[ip - sy_p])
+                   / viscosity;
+        }
         u_new = h;
       }),
                            FACE(UpFace,
@@ -1494,22 +1547,41 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
         vel_idx = vy_l + sy_v;
 
         dir = 1;
-        diff = pp[ip] - pp[ip + sy_p];
-        u_old = h
-                * PMean(pp[ip], pp[ip + sy_p],
-                        permyp[ip], permyp[ip + sy_p])
-                * (diff / dy)
-                * RPMean(pp[ip], pp[ip + sy_p],
-                         rpp[ip] * dp[ip], rpp[ip + sy_p] * dp[ip + sy_p])
-                / viscosity;
+        if (spherical_accumulation)
+        {
+          int iradius = SubvectorEltIndex(radius_sub, i, j, k);
+          int izmult = SubvectorEltIndex(z_mult_sub, i, j, k);
+          double radius = radius_dat[iradius];
+          double thickness = dz * z_mult_dat[izmult];
+          double refinement = pow(2.0, r);
+          double delta_lambda = longitude_width / refinement;
+          double delta_phi = latitude_width / refinement;
+          double phi_face = latitude_origin + (j + 1) * delta_phi;
+          h = radius * thickness * cos(phi_face) * delta_lambda;
+          /* Positive faces were computed by the internal loop (including
+           * TFG, upwinding and flow barriers). Negative boundary faces had
+           * no domain cell on their outside to compute an old contribution. */
+          u_old = vel_vec[vel_idx] * h;
+        }
+        else
+        {
+          diff = pp[ip] - pp[ip + sy_p];
+          u_old = h
+                  * PMean(pp[ip], pp[ip + sy_p],
+                          permyp[ip], permyp[ip + sy_p])
+                  * (diff / dy)
+                  * RPMean(pp[ip], pp[ip + sy_p],
+                           rpp[ip] * dp[ip], rpp[ip + sy_p] * dp[ip + sy_p])
+                  / viscosity;
 
-        u_old += h
-                 * PMean(pp[ip], pp[ip + sy_p], permyp[ip],
-                         permyp[ip + sy_p])
-                 * (-y_dir_g)
-                 * RPMean(pp[ip], pp[ip + sy_p], rpp[ip] * dp[ip],
-                          rpp[ip + sy_p] * dp[ip + sy_p])
-                 / viscosity;
+          u_old += h
+                   * PMean(pp[ip], pp[ip + sy_p], permyp[ip],
+                           permyp[ip + sy_p])
+                   * (-y_dir_g)
+                   * RPMean(pp[ip], pp[ip + sy_p], rpp[ip] * dp[ip],
+                            rpp[ip + sy_p] * dp[ip + sy_p])
+                   / viscosity;
+        }
         u_new = h;
       }),
                            FACE(BackFace,
