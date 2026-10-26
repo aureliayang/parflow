@@ -62,6 +62,7 @@ typedef struct {
   enum JacobianType type;
   double SpinupDampP1; // NBE
   double SpinupDampP2; // NBE
+  int spherical_accumulation; /* Experimental spherical residual/Jacobian geometry. */
   int tfgupwind;  // RMM
   int using_MGSemi;  // RMM
   SeepageLookup seepage;
@@ -388,9 +389,37 @@ void    RichardsJacobianEval(
                                                            density, gravity, problem_data,
                                                            CALCDER));
 
+  /* Match NlFunctionEval geometry for storage, internal fluxes, FluxBC,
+   * and the top SeepageFaceBC. Other boundary types remain Cartesian. */
+  int spherical_accumulation = public_xtra->spherical_accumulation;
+  Vector *radius_center = ProblemDataRadiusCenter(problem_data);
+  double longitude_width = 0.0;
+  double latitude_origin = 0.0;
+  double latitude_width = 0.0;
+  if (spherical_accumulation)
+  {
+    double radians_per_degree = acos(-1.0) / 180.0;
+    if (radius_center == NULL)
+      InputError("Spherical accumulation requires a populated cell-center radius vector");
+    longitude_width = BackgroundDX(GlobalsBackground) * radians_per_degree;
+    latitude_origin = BackgroundY(GlobalsBackground) * radians_per_degree;
+    latitude_width = BackgroundDY(GlobalsBackground) * radians_per_degree;
+  }
+
+  /* Save negative own-pressure derivatives of positive-face integrated flows.
+   * FluxBC must cancel exactly the diagonal contribution added by the interior
+   * loop, for both full and symmetric preconditioner matrices. */
+  Vector *flux_diag_x = spherical_accumulation ? NewVectorType(grid, 1, 1, vector_cell_centered) : NULL;
+  Vector *flux_diag_y = spherical_accumulation ? NewVectorType(grid, 1, 1, vector_cell_centered) : NULL;
+  Vector *flux_diag_z = spherical_accumulation ? NewVectorType(grid, 1, 1, vector_cell_centered) : NULL;
+
   ForSubgridI(is, GridSubgrids(grid))
   {
     subgrid = GridSubgrid(grid, is);
+
+    Subvector *radius_sub = spherical_accumulation
+                            ? VectorSubvector(radius_center, is) : NULL;
+    double *radius_dat = radius_sub != NULL ? SubvectorData(radius_sub) : NULL;
 
     J_sub = MatrixSubmatrix(J, is);
     cp = SubmatrixStencilData(J_sub, 0);
@@ -448,6 +477,23 @@ void    RichardsJacobianEval(
       int ipo = SubvectorEltIndex(po_sub, i, j, k);
       int iv = SubvectorEltIndex(d_sub, i, j, k);
       double vol2 = vol * z_mult_dat[ipo];
+      if (spherical_accumulation)
+      {
+        int iradius = SubvectorEltIndex(radius_sub, i, j, k);
+        int izmult = SubvectorEltIndex(z_mult_sub, i, j, k);
+        double radius = radius_dat[iradius];
+        double thickness = dz * z_mult_dat[izmult];
+        double refinement = pow(2.0, r);
+        double delta_lambda = longitude_width / refinement;
+        double delta_phi = latitude_width / refinement;
+        double phi_south = latitude_origin + j * delta_phi;
+        double phi_north = phi_south + delta_phi;
+        double latitude_factor = 2.0 * cos(0.5 * (phi_north + phi_south))
+                                 * sin(0.5 * delta_phi);
+        /* Geometry is static with respect to pressure: only replace volume. */
+        vol2 = thickness * (radius * radius + thickness * thickness / 12.0)
+               * delta_lambda * latitude_factor;
+      }
       cp[im] += (sdp[iv] * dp[iv] + sp[iv] * ddp[iv])
                 * pop[ipo] * vol2 + ss[iv] * vol2 * (sdp[iv] * dp[iv] * pp[iv] + sp[iv] * ddp[iv] * pp[iv] + sp[iv] * dp[iv]); //sk start
     });
@@ -513,6 +559,12 @@ void    RichardsJacobianEval(
   ForSubgridI(is, GridSubgrids(grid))
   {
     subgrid = GridSubgrid(grid, is);
+    Subvector *radius_sub = spherical_accumulation ? VectorSubvector(radius_center, is) : NULL;
+    double *radius_dat = radius_sub != NULL ? SubvectorData(radius_sub) : NULL;
+    Subvector *diag_sub = spherical_accumulation ? VectorSubvector(flux_diag_x, is) : NULL;
+    double *diag_x = spherical_accumulation ? SubvectorData(diag_sub) : NULL;
+    double *diag_y = spherical_accumulation ? SubvectorData(VectorSubvector(flux_diag_y, is)) : NULL;
+    double *diag_z = spherical_accumulation ? SubvectorData(VectorSubvector(flux_diag_z, is)) : NULL;
     Subgrid* grid2d_subgrid = GridSubgrid(grid2d, is);
     int grid2d_iz = SubgridIZ(grid2d_subgrid);
 
@@ -597,6 +649,36 @@ void    RichardsJacobianEval(
       int im = SubmatrixEltIndex(J_sub, i, j, k);
       int ioo = SubvectorEltIndex(x_ssl_sub, i, j, grid2d_iz);
 
+      /* Same positive-face geometry as NlFunctionEval. */
+      double distance_x = dx;
+      double distance_y = dy;
+      double distance_z = dz * Mean(z_mult_dat[ip], z_mult_dat[ip + sz_v]);
+      double area_right = ffx * z_mult_dat[ip];
+      double area_front = ffy * z_mult_dat[ip];
+      double area_upper = ffz;
+      if (spherical_accumulation)
+      {
+        int iradius = SubvectorEltIndex(radius_sub, i, j, k);
+        int iradius_top = SubvectorEltIndex(radius_sub, i, j, k + 1);
+        int izmult = SubvectorEltIndex(z_mult_sub, i, j, k);
+        double radius = radius_dat[iradius];
+        double thickness = dz * z_mult_dat[izmult];
+        double refinement = pow(2.0, r);
+        double delta_lambda = longitude_width / refinement;
+        double delta_phi = latitude_width / refinement;
+        double phi_south = latitude_origin + j * delta_phi;
+        double phi_north = phi_south + delta_phi;
+        double phi_center = 0.5 * (phi_south + phi_north);
+        double radius_top = radius + 0.5 * thickness;
+        double latitude_factor = 2.0 * cos(phi_center) * sin(0.5 * delta_phi);
+        distance_x = radius * cos(phi_center) * delta_lambda;
+        distance_y = radius * delta_phi;
+        distance_z = radius_dat[iradius_top] - radius;
+        area_right = radius * thickness * delta_phi;
+        area_front = radius * thickness * cos(phi_north) * delta_lambda;
+        area_upper = radius_top * radius_top * delta_lambda * latitude_factor;
+      }
+
       double prod = rpp[ip] * dp[ip];
       double prod_der = rpdp[ip] * dp[ip] + rpp[ip] * ddp[ip];
 
@@ -656,10 +738,10 @@ void    RichardsJacobianEval(
 
       /* diff >= 0 implies flow goes left to right */
       double diff = pp[ip] - pp[ip + 1];
-      double updir = (diff / dx) * x_dir_g_c - x_dir_g;
+      double updir = (diff / distance_x) * x_dir_g_c - x_dir_g;
 
       /* multiply X_coeff by FB in x */
-      double x_coeff = FBx_dat[ip] * dt * ffx * (1.0 / dx) * z_mult_dat[ip]
+      double x_coeff = FBx_dat[ip] * dt * area_right * (1.0 / distance_x)
                        * PMean(pp[ip], pp[ip + 1], permxp[ip], permxp[ip + 1])
                        / viscosity;
 
@@ -672,7 +754,7 @@ void    RichardsJacobianEval(
                           * RPMean(updir, 0.0, prod_der, 0.0)) * x_dir_g_c
                          + sym_west_temp;
 
-      west_temp += (x_coeff * dx * RPMean(updir, 0.0, prod_der, 0.0)) * x_dir_g; //RMM TFG contributions, non sym
+      west_temp += (x_coeff * distance_x * RPMean(updir, 0.0, prod_der, 0.0)) * x_dir_g; //RMM TFG contributions, non sym
 
       double sym_east_temp = (-x_coeff
                               * RPMean(updir, 0.0, prod, prod_rt)) * x_dir_g_c; //RMM added sym TFG contributions
@@ -681,15 +763,15 @@ void    RichardsJacobianEval(
                           * RPMean(updir, 0.0, 0.0, prod_rt_der)) * x_dir_g_c
                          + sym_east_temp;
 
-      east_temp += -(x_coeff * dx * RPMean(updir, 0.0, 0.0, prod_rt_der)) * x_dir_g; //RMM  TFG contributions non sym
+      east_temp += -(x_coeff * distance_x * RPMean(updir, 0.0, 0.0, prod_rt_der)) * x_dir_g; //RMM  TFG contributions non sym
 
       /* diff >= 0 implies flow goes south to north */
       diff = pp[ip] - pp[ip + sy_v];
-      updir = (diff / dy) * y_dir_g_c - y_dir_g;
+      updir = (diff / distance_y) * y_dir_g_c - y_dir_g;
 
 
       /* multiply y_coeff by FB in y */
-      double y_coeff = FBy_dat[ip] * dt * ffy * (1.0 / dy) * z_mult_dat[ip]
+      double y_coeff = FBy_dat[ip] * dt * area_front * (1.0 / distance_y)
                        * PMean(pp[ip], pp[ip + sy_v], permyp[ip], permyp[ip + sy_v])
                        / viscosity;
 
@@ -700,7 +782,7 @@ void    RichardsJacobianEval(
                           * RPMean(updir, 0.0, prod_der, 0.0) * y_dir_g_c
                           + sym_south_temp;
 
-      south_temp += (y_coeff * dy * RPMean(updir, 0.0, prod_der, 0.0)) * y_dir_g; //RMM TFG contributions, non sym
+      south_temp += (y_coeff * distance_y * RPMean(updir, 0.0, prod_der, 0.0)) * y_dir_g; //RMM TFG contributions, non sym
 
 
       double sym_north_temp = y_coeff
@@ -711,9 +793,9 @@ void    RichardsJacobianEval(
                                    prod_no_der) * y_dir_g_c
                           + sym_north_temp;
 
-      north_temp += -(y_coeff * dy * RPMean(updir, 0.0, 0.0, prod_no_der)) * y_dir_g; //RMM  TFG contributions non sym
+      north_temp += -(y_coeff * distance_y * RPMean(updir, 0.0, 0.0, prod_no_der)) * y_dir_g; //RMM  TFG contributions non sym
 
-      double sep = (dz * Mean(z_mult_dat[ip], z_mult_dat[ip + sz_v]));
+      double sep = distance_z;
       /* diff >= 0 implies flow goes lower to upper */
 
 
@@ -725,11 +807,11 @@ void    RichardsJacobianEval(
       diff = lower_cond - upper_cond;
 
       /* multiply z_coeff by FB in z */
-      double z_coeff = FBz_dat[ip] * dt * ffz
+      double z_coeff = FBz_dat[ip] * dt * area_upper
                        * PMeanDZ(permzp[ip], permzp[ip + sz_v], z_mult_dat[ip], z_mult_dat[ip + sz_v])
                        / viscosity;
 
-      double sym_lower_temp = -z_coeff * (1.0 / (dz * Mean(z_mult_dat[ip], z_mult_dat[ip + sz_v])))
+      double sym_lower_temp = -z_coeff * (1.0 / distance_z)
                               * RPMean(lower_cond, upper_cond, prod,
                                        prod_up);
 
@@ -740,7 +822,7 @@ void    RichardsJacobianEval(
                                          prod_up)))
                           + sym_lower_temp;
 
-      double sym_upper_temp = z_coeff * (1.0 / (dz * Mean(z_mult_dat[ip], z_mult_dat[ip + sz_v])))
+      double sym_upper_temp = z_coeff * (1.0 / distance_z)
                               * -RPMean(lower_cond, upper_cond, prod,
                                         prod_up);
 
@@ -751,6 +833,21 @@ void    RichardsJacobianEval(
                                 * RPMean(lower_cond, upper_cond, prod,
                                          prod_up)))
                           + sym_upper_temp;
+
+      if (spherical_accumulation)
+      {
+        double weight_lower = z_mult_dat[ip] / (z_mult_dat[ip] + z_mult_dat[ip + sz_v]);
+        double weight_upper = z_mult_dat[ip + sz_v] / (z_mult_dat[ip] + z_mult_dat[ip + sz_v]);
+        double mobility = RPMean(lower_cond, upper_cond, prod, prod_up);
+        lower_temp = -z_coeff * (diff * RPMean(lower_cond, upper_cond, prod_der, 0.0)
+                                + (1.0 / distance_z - weight_lower * gravity * ddp[ip]) * mobility);
+        upper_temp = z_coeff * (diff * RPMean(lower_cond, upper_cond, 0.0, prod_up_der)
+                               + (-1.0 / distance_z - weight_upper * gravity * ddp[ip + sz_v]) * mobility);
+        int idiag = SubvectorEltIndex(diag_sub, i, j, k);
+        diag_x[idiag] = west_temp;
+        diag_y[idiag] = south_temp;
+        diag_z[idiag] = lower_temp;
+      }
 
       PlusEquals(cp[im], -(west_temp + south_temp + lower_temp));
       PlusEquals(cp[im + 1], -east_temp);
@@ -778,7 +875,9 @@ void    RichardsJacobianEval(
 
   /*  Calculate correction for boundary conditions */
 
-  if (symm_part)
+  /* Spherical FluxBC below uses saved diagonal contributions directly;
+   * it does not need the Cartesian off-diagonal pre-correction. */
+  if (symm_part && !spherical_accumulation)
   {
     /*  For symmetric part only, we first adjust coefficients of normal */
     /*  direction boundary pressure by adding in the nonsymmetric part. */
@@ -959,6 +1058,12 @@ void    RichardsJacobianEval(
   ForSubgridI(is, GridSubgrids(grid))
   {
     subgrid = GridSubgrid(grid, is);
+    Subvector *radius_sub = spherical_accumulation ? VectorSubvector(radius_center, is) : NULL;
+    double *radius_dat = radius_sub != NULL ? SubvectorData(radius_sub) : NULL;
+    Subvector *diag_sub = spherical_accumulation ? VectorSubvector(flux_diag_x, is) : NULL;
+    double *diag_x = spherical_accumulation ? SubvectorData(diag_sub) : NULL;
+    double *diag_y = spherical_accumulation ? SubvectorData(VectorSubvector(flux_diag_y, is)) : NULL;
+    double *diag_z = spherical_accumulation ? SubvectorData(VectorSubvector(flux_diag_z, is)) : NULL;
 
     p_sub = VectorSubvector(pressure, is);
     s_sub = VectorSubvector(saturation, is);
@@ -1194,16 +1299,23 @@ void    RichardsJacobianEval(
       ForPatchCellsPerFace(FluxBC,
                            BeforeAllCells(DoNothing),
                            LoopVars(i, j, k, ival, bc_struct, ipatch, is),
-                           Locals(int im; double *op; ),
-                           CellSetup({ im = SubmatrixEltIndex(J_sub, i, j, k); }),
+                           Locals(int im, idiag; double *op; double diagonal_correction; ),
+                           CellSetup({
+        im = SubmatrixEltIndex(J_sub, i, j, k);
+        idiag = spherical_accumulation ? SubvectorEltIndex(diag_sub, i, j, k) : 0;
+        diagonal_correction = 0.0;
+      }),
                            FACE(LeftFace, { op = wp; }),
-                           FACE(RightFace, { op = ep; }),
+                           FACE(RightFace, { op = ep; if (spherical_accumulation) diagonal_correction = diag_x[idiag]; }),
                            FACE(DownFace, { op = sop; }),
-                           FACE(UpFace, { op = np; }),
+                           FACE(UpFace, { op = np; if (spherical_accumulation) diagonal_correction = diag_y[idiag]; }),
                            FACE(BackFace, { op = lp; }),
-                           FACE(FrontFace, { op = up; }),
+                           FACE(FrontFace, { op = up; if (spherical_accumulation) diagonal_correction = diag_z[idiag]; }),
                            CellFinalize({
-        cp[im] += op[im];
+        /* A prescribed flux has zero pressure derivative. Positive faces
+         * remove the exact own-pressure contribution from the interior loop;
+         * negative domain faces had no outside loop center, hence zero. */
+        cp[im] += spherical_accumulation ? diagonal_correction : op[im];
         op[im] = 0.0;
       }),
                            AfterAllCells(DoNothing)
@@ -1333,7 +1445,21 @@ void    RichardsJacobianEval(
 
         if ((pp[ip]) >= 0.0)
         {
-          cp[im] += (vol / dz) * dt * (1.0 + 0.0);                                            //RMM
+          double top_area = vol / dz;
+          if (spherical_accumulation)
+          {
+            int iradius = SubvectorEltIndex(radius_sub, i, j, k);
+            int izmult = SubvectorEltIndex(z_mult_sub, i, j, k);
+            double thickness = dz * z_mult_dat[izmult];
+            double radius_top = radius_dat[iradius] + 0.5 * thickness;
+            double refinement = pow(2.0, SubgridRX(subgrid));
+            double delta_lambda = longitude_width / refinement;
+            double delta_phi = latitude_width / refinement;
+            double phi_center = latitude_origin + (j + 0.5) * delta_phi;
+            top_area = radius_top * radius_top * delta_lambda
+                       * 2.0 * cos(phi_center) * sin(0.5 * delta_phi);
+          }
+          cp[im] += top_area * dt;
         }
         else
         {
@@ -2192,6 +2318,13 @@ void    RichardsJacobianEval(
    * Free temp vectors
    *-----------------------------------------------------------------------*/
 
+  if (spherical_accumulation)
+  {
+    FreeVector(flux_diag_x);
+    FreeVector(flux_diag_y);
+    FreeVector(flux_diag_z);
+  }
+
   FreeBCStruct(bc_struct);
 
   tfree(ovlnd_flag);
@@ -2412,6 +2545,9 @@ PFModule   *RichardsJacobianEvalNewPublicXtra(char *name)
   (void)name;
 
   public_xtra = ctalloc(PublicXtra, 1);
+
+  public_xtra->spherical_accumulation =
+    GetIntDefault("Solver.Experimental.SphericalAccumulation", 0);
 /* These parameters dampen the transition/switching into overland flow to speedup
  * the spinup process */
   sprintf(key, "OverlandSpinupDampP1");
