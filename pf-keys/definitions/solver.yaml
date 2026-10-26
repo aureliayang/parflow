@@ -38,15 +38,13 @@ Solver:
     __doc__: 'Experimental solver capabilities'
     SphericalAccumulation:
       help: >
-        [Type: int] Experimental spherical groundwater geometry (0=off, 1=on).
+        [Type: boolean] Experimental spherical groundwater geometry (False=off, True=on).
         When enabled, ComputationalGrid.Lower.X/Y and DX/DY are degrees,
         vertical lengths and RadiusCenter values are meters. Currently scoped
         to FluxConst boundaries and a top SeepageFace boundary, without overland flow.
-      default: 0
+      default: False
       domains:
-        IntValue:
-          min_value: 0
-          max_value: 1
+        BoolDomain:
 
   SphericalGeometry:
     __doc__: 'Static input for experimental spherical geometry'

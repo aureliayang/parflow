@@ -93,10 +93,13 @@ static void ReadSphericalRadius(ProblemData *problem_data)
 {
   Grid *grid = VectorGrid(ProblemDataZmult(problem_data));
   Background *bg = GlobalsBackground;
-  int enabled = GetIntDefault("Solver.Experimental.SphericalAccumulation", 0);
+  NameArray spherical_na = NA_NewNameArray("False True");
+  char *spherical_key = "Solver.Experimental.SphericalAccumulation";
+  char *spherical_name = GetStringDefault(spherical_key, "False");
+  int enabled = NA_NameToIndexExitOnError(spherical_na, spherical_name, spherical_key);
+  NA_FreeNameArray(spherical_na);
   int is, i, j, k;
-  int invalid = enabled != 0 && enabled != 1;
-  CheckSphericalGeometry(invalid, "Solver.Experimental.SphericalAccumulation must be 0 or 1");
+  int invalid = 0;
   if (!enabled)
     return;
 

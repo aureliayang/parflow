@@ -2721,10 +2721,13 @@ PFModule   *NlFunctionEvalNewPublicXtra(char *name)
 
   public_xtra = ctalloc(PublicXtra, 1);
 
-  /* Integer switch, default off. Radius input and the remaining spherical
-   * boundary/Jacobian terms are intentionally not implemented yet. */
+  /* Boolean switch shared by geometry input, residual and Jacobian. */
+  NameArray spherical_na = NA_NewNameArray("False True");
+  char *spherical_key = "Solver.Experimental.SphericalAccumulation";
+  char *spherical_name = GetStringDefault(spherical_key, "False");
   public_xtra->spherical_accumulation =
-    GetIntDefault("Solver.Experimental.SphericalAccumulation", 0);
+    NA_NameToIndexExitOnError(spherical_na, spherical_name, spherical_key);
+  NA_FreeNameArray(spherical_na);
 
 /* These parameters dampen the transition/switching into overland flow to speedup
  * the spinup process. */

@@ -34,6 +34,7 @@ add_custom_command(
         "${CMAKE_CURRENT_SOURCE_DIR}/parflow/tools/tests/data/forsyth5.out.press.00001.pfb"
         "${CMAKE_CURRENT_SOURCE_DIR}/parflow/tools/tests/pfb_summary.py"
         "${CMAKE_CURRENT_SOURCE_DIR}/parflow/tools/tests/test_pf_xarray.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}/parflow/tools/tests/test_spherical_geometry_keys.py"
         "${CMAKE_CURRENT_SOURCE_DIR}/parflow/tools/__init__.py"
         "${CMAKE_CURRENT_SOURCE_DIR}/parflow/tools/builders.py"
         "${CMAKE_CURRENT_SOURCE_DIR}/parflow/tools/compare.py"

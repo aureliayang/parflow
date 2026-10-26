@@ -7592,18 +7592,14 @@ closed-boundary experiment. Other boundary types, land-surface coupling,
 overland routing, wells and reservoirs have not been converted in this branch.
 This is not general spherical support for all ParFlow configurations.
 
-Enable the experimental geometry and supply the static radius field::
+Enable the experimental geometry in the Python run script::
 
-   pfset Solver.Experimental.SphericalAccumulation 1
-   pfset Solver.SphericalGeometry.RadiusCenter.FileName "radius_center.pfb"
-
-Python configuration uses the same keys::
-
-   run.Solver.Experimental.SphericalAccumulation = 1
+   run.Solver.Experimental.SphericalAccumulation = True
    run.Solver.SphericalGeometry.RadiusCenter.FileName = "radius_center.pfb"
 
-The switch is an integer (0 or 1), defaulting to 0. At 0 the radius key is not
-required, no radius file is read, and Cartesian geometry remains in use. At 1:
+The switch is a Python boolean, defaulting to ``False``. At ``False`` the radius
+key is not required, no radius file is read, and Cartesian geometry remains in
+use. At ``True``:
 
 * ``ComputationalGrid.Lower.X`` and ``Lower.Y`` are longitude and latitude in
   **degrees**, and ``ComputationalGrid.DX`` and ``DY`` are positive angular
@@ -7654,9 +7650,8 @@ those of the actual model::
    # Configure z_mult to thickness / dz (here the layer multipliers are 2, 1, 0.5).
    # Set ComputationalGrid.NZ = 3 and the matching NX, NY and background metadata.
 
-Use the normal ParFlow distribution step for the chosen process topology,
-for example ``run.dist("radius_center.pfb")`` in Python or
-``pfdistribute radius_center.pfb`` in Tcl, before starting the simulation.
+Use ``run.dist("radius_center.pfb")`` for the chosen process topology before
+starting the simulation.
 Distribute again if P/Q/R changes. PFB metadata should match the computational
 background; the loader checks the global dimensions and uses the configured
 background, rather than PFB metadata, to calculate geometry.
@@ -7671,3 +7666,22 @@ consistently. These outside values are numerical geometry extensions, not
 additional active cells and not an imposed water flux. Interior inactive
 locations retain the radii supplied in the PFB. The field is owned and freed
 by ``ProblemData``.
+
+Python key generation
+^^^^^^^^^^^^^^^^^^^^^
+
+These keys are registered in ``pf-keys/definitions/solver.yaml``. ParFlow's
+``GeneratePythonKeys`` build target generates the corresponding classes in
+``pftools/python/parflow/tools/database/generated.py`` in the build tree; that
+file is not edited or committed manually. After updating this branch, rebuild
+and reinstall the Python tools used by the run script so an older installed
+package does not silently lack the new keys. For an existing CMake build::
+
+   cmake --build <build-directory> --target GeneratePythonKeys
+   cmake --build <build-directory>
+   cmake --install <build-directory>
+
+Use the Python environment/package from that updated installation. The boolean
+is serialized as ``True``/``False`` in PFIDB, and the C code reads those names
+using the existing ``False True`` NameArray convention. Integers 0/1 are no
+longer accepted for this key.
