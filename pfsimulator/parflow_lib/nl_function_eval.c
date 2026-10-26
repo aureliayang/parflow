@@ -998,6 +998,10 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
   {
     subgrid = GridSubgrid(grid, is);
 
+    Subvector *radius_sub = spherical_accumulation
+                            ? VectorSubvector(radius_center, is) : NULL;
+    double *radius_dat = radius_sub != NULL ? SubvectorData(radius_sub) : NULL;
+
     d_sub = VectorSubvector(density, is);
     rp_sub = VectorSubvector(rel_perm, is);
     f_sub = VectorSubvector(fval, is);
@@ -1896,14 +1900,32 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
         u_new = h;
       }),
                            FACE(FrontFace, {
+        /* h denotes face area here, not pressure head. */
         h = ffz * del_x_slope * del_y_slope;
+        if (spherical_accumulation)
+        {
+          int iradius = SubvectorEltIndex(radius_sub, i, j, k);
+          int izmult = SubvectorEltIndex(z_mult_sub, i, j, k);
+          double thickness = dz * z_mult_dat[izmult];
+          double radius_top = radius_dat[iradius] + 0.5 * thickness;
+          double refinement = pow(2.0, r);
+          double delta_lambda = longitude_width / refinement;
+          double delta_phi = latitude_width / refinement;
+          double phi_south = latitude_origin + j * delta_phi;
+          double phi_center = phi_south + 0.5 * delta_phi;
+          double latitude_factor = 2.0 * cos(phi_center) * sin(0.5 * delta_phi);
+          h = radius_top * radius_top * delta_lambda * latitude_factor;
+        }
         vel_vec = vz;
         vel_idx = vz_l + sz_v;
         dir = 1;
         u_new = h;
 
 /* add flux loss equal to excess head that overwrites the prior overland flux */
-        q_overlnd = (vol / dz) * dt * (pfmax(pp[ip], 0.0) - 0.0);                        //@RMM
+        /* Retain the original Cartesian drainage law; use the actual top
+         * face area for its integrated spherical contribution. */
+        double drainage_area = spherical_accumulation ? h : (vol / dz);
+        q_overlnd = drainage_area * dt * (pfmax(pp[ip], 0.0) - 0.0);
 
         fp[ip] += q_overlnd;
       }),
