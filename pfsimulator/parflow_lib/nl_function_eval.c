@@ -339,7 +339,7 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
   if (spherical_accumulation)
   {
     if (radius_center == NULL)
-      InputError("Spherical accumulation requires a populated cell-center radius vector");
+      InputError("%s%s", "Spherical accumulation requires a populated cell-center radius vector", "");
     longitude_width = BackgroundDX(GlobalsBackground) * radians_per_degree;
     latitude_origin = BackgroundY(GlobalsBackground) * radians_per_degree;
     latitude_width = BackgroundDY(GlobalsBackground) * radians_per_degree;

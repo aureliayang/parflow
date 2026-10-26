@@ -73,6 +73,166 @@ typedef struct {
 } InstanceXtra;
 
 
+/* All ranks must reject invalid geometry together, before halo communication. */
+static void CheckSphericalGeometry(int invalid, const char *message)
+{
+  amps_Invoice invoice = amps_NewInvoice("%i", &invalid);
+  amps_AllReduce(amps_CommWorld, invoice, amps_Max);
+  amps_FreeInvoice(invoice);
+  if (invalid)
+    InputError("%s%s\n", message, "");
+}
+
+/* Static geometry for the experimental spherical groundwater path.
+ * Input contains the whole rectangular grid, including inactive cells, but no
+ * ghosts. Three allocated halo layers permit the existing Godunov exchange
+ * (27-point core plus extended faces); the flow loops need only the first.
+ * This also fills corner/edge halos, unlike VectorUpdateAll's six-face stencil.
+ */
+static void ReadSphericalRadius(ProblemData *problem_data)
+{
+  Grid *grid = VectorGrid(ProblemDataZmult(problem_data));
+  Background *bg = GlobalsBackground;
+  int enabled = GetIntDefault("Solver.Experimental.SphericalAccumulation", 0);
+  int is, i, j, k;
+  int invalid = enabled != 0 && enabled != 1;
+  CheckSphericalGeometry(invalid, "Solver.Experimental.SphericalAccumulation must be 0 or 1");
+  if (!enabled)
+    return;
+
+  char *filename = GetString("Solver.SphericalGeometry.RadiusCenter.FileName");
+  double dx = BackgroundDX(bg);
+  double dy = BackgroundDY(bg);
+  int ilo = BackgroundIX(bg), ihi = ilo + BackgroundNX(bg) - 1;
+  int jlo = BackgroundIY(bg), jhi = jlo + BackgroundNY(bg) - 1;
+  int klo = BackgroundIZ(bg), khi = klo + BackgroundNZ(bg) - 1;
+  double south = BackgroundY(bg) + jlo * dy;
+  double north = BackgroundY(bg) + (jhi + 1) * dy;
+  invalid = !isfinite(dx) || !isfinite(dy) || dx <= 0.0 || dy <= 0.0
+            || !isfinite(south) || !isfinite(north) || south <= -90.0 || north >= 90.0
+            || dx * BackgroundNX(bg) > 360.0;
+  ForSubgridI(is, GridSubgrids(grid))
+  {
+    Subgrid *sg = GridSubgrid(grid, is);
+    invalid |= SubgridRX(sg) != 0 || SubgridRY(sg) != 0 || SubgridRZ(sg) != 0;
+  }
+  CheckSphericalGeometry(invalid,
+                         "Spherical geometry requires an unrefined grid, positive angular spacing in degrees, "
+                         "longitude span <= 360 degrees and latitude boundaries strictly between -90 and 90 degrees");
+
+  /* Check the global dimensions before ReadPFBinary writes subgrid data.
+   * Use the same distributed-file opening convention as ReadPFBinary. */
+  amps_File file = amps_FFopen(amps_CommWorld, filename, "rb", 0);
+  invalid = file == NULL;
+  CheckSphericalGeometry(invalid, "Cannot open spherical radius PFB (distribute it for the configured process grid)");
+  if (amps_Rank(amps_CommWorld) == 0)
+  {
+    double origin[3];
+    int dimensions[3];
+    amps_ReadDouble(file, origin, 3);
+    amps_ReadInt(file, dimensions, 3);
+    invalid = dimensions[0] != BackgroundNX(bg) || dimensions[1] != BackgroundNY(bg)
+              || dimensions[2] != BackgroundNZ(bg);
+  }
+  amps_FFclose(file);
+  CheckSphericalGeometry(invalid, "Spherical radius PFB dimensions must equal ComputationalGrid.NX, NY, NZ");
+
+  Vector *radius = NewVectorType(grid, 1, 3, vector_cell_centered);
+  Vector *thickness = NewVectorType(grid, 1, 3, vector_cell_centered);
+  InitVectorAll(radius, NAN);
+  InitVectorAll(thickness, NAN);
+  ReadPFBinary(filename, radius);
+
+  /* Keep a fully exchanged multiplier copy while constructing geometric halos. */
+  invalid = 0;
+  ForSubgridI(is, GridSubgrids(grid))
+  {
+    Subgrid *sg = GridSubgrid(grid, is);
+    Subvector *rs = VectorSubvector(radius, is);
+    Subvector *ts = VectorSubvector(thickness, is);
+    Subvector *zs = VectorSubvector(ProblemDataZmult(problem_data), is);
+    double *rd = SubvectorData(rs), *td = SubvectorData(ts), *zd = SubvectorData(zs);
+    double dz = SubgridDZ(sg);
+    for (k = SubgridIZ(sg); k < SubgridIZ(sg) + SubgridNZ(sg); k++)
+      for (j = SubgridIY(sg); j < SubgridIY(sg) + SubgridNY(sg); j++)
+        for (i = SubgridIX(sg); i < SubgridIX(sg) + SubgridNX(sg); i++)
+        {
+          int ir = SubvectorEltIndex(rs, i, j, k);
+          int it = SubvectorEltIndex(ts, i, j, k);
+          int iz = SubvectorEltIndex(zs, i, j, k);
+          td[it] = zd[iz];
+          invalid |= !isfinite(rd[ir]) || !isfinite(td[it]) || td[it] <= 0.0
+                     || !isfinite(dz) || dz <= 0.0 || rd[ir] <= 0.5 * dz * td[it];
+        }
+  }
+  CheckSphericalGeometry(invalid, "Radius PFB must contain finite positive center radii in meters in every grid cell; layer thickness must be finite and positive");
+
+  VectorUpdateCommHandle *handle = InitVectorUpdate(radius, VectorUpdateGodunov);
+  FinalizeVectorUpdate(handle);
+  handle = InitVectorUpdate(thickness, VectorUpdateGodunov);
+  FinalizeVectorUpdate(handle);
+
+  /* Check adjacent radial centers before extrapolating physical-boundary halos.
+   * All columns must be contiguous and k must increase radially outward. */
+  invalid = 0;
+  ForSubgridI(is, GridSubgrids(grid))
+  {
+    Subgrid *sg = GridSubgrid(grid, is);
+    Subvector *rs = VectorSubvector(radius, is);
+    Subvector *ts = VectorSubvector(thickness, is);
+    double *rd = SubvectorData(rs), *td = SubvectorData(ts);
+    double dz = SubgridDZ(sg);
+    for (k = SubgridIZ(sg); k < SubgridIZ(sg) + SubgridNZ(sg); k++)
+      for (j = SubgridIY(sg); j < SubgridIY(sg) + SubgridNY(sg); j++)
+        for (i = SubgridIX(sg); i < SubgridIX(sg) + SubgridNX(sg); i++)
+          if (k < khi)
+          {
+            int ir = SubvectorEltIndex(rs, i, j, k);
+            int iu = SubvectorEltIndex(rs, i, j, k + 1);
+            int it = SubvectorEltIndex(ts, i, j, k);
+            int itu = SubvectorEltIndex(ts, i, j, k + 1);
+            double expected = 0.5 * dz * (td[it] + td[itu]);
+            double separation = rd[iu] - rd[ir];
+            invalid |= !isfinite(separation) || separation <= 0.0
+                       || fabs(separation - expected) > 1.0e-6 + 1.0e-8 * expected;
+          }
+  }
+  CheckSphericalGeometry(invalid, "Radius centers must increase with k and adjacent radial layers must touch (center spacing equals the mean of their thicknesses)");
+
+  /* Fill the one-cell shell outside the global rectangular box. Horizontally
+   * extend the nearest column; radially extend by its boundary-cell thickness.
+   * Interior inactive cells keep their explicitly supplied PFB geometry. */
+  invalid = 0;
+  ForSubgridI(is, GridSubgrids(grid))
+  {
+    Subgrid *sg = GridSubgrid(grid, is);
+    Subvector *rs = VectorSubvector(radius, is);
+    Subvector *ts = VectorSubvector(thickness, is);
+    Subvector *zs = VectorSubvector(ProblemDataZmult(problem_data), is);
+    double *rd = SubvectorData(rs), *td = SubvectorData(ts), *zd = SubvectorData(zs);
+    double dz = SubgridDZ(sg);
+    for (k = SubgridIZ(sg) - 1; k <= SubgridIZ(sg) + SubgridNZ(sg); k++)
+      for (j = SubgridIY(sg) - 1; j <= SubgridIY(sg) + SubgridNY(sg); j++)
+        for (i = SubgridIX(sg) - 1; i <= SubgridIX(sg) + SubgridNX(sg); i++)
+        {
+          int ci = pfmin(pfmax(i, ilo), ihi);
+          int cj = pfmin(pfmax(j, jlo), jhi);
+          int ck = pfmin(pfmax(k, klo), khi);
+          int ir = SubvectorEltIndex(rs, i, j, k);
+          int it = SubvectorEltIndex(ts, ci, cj, ck);
+          int ic = SubvectorEltIndex(rs, ci, cj, ck);
+          double multiplier = td[it];
+          rd[ir] = rd[ic] + (k - ck) * dz * multiplier;
+          zd[SubvectorEltIndex(zs, i, j, k)] = multiplier;
+          invalid |= !isfinite(rd[ir]) || !isfinite(multiplier) || multiplier <= 0.0
+                     || rd[ir] <= 0.5 * dz * multiplier;
+        }
+  }
+  CheckSphericalGeometry(invalid, "Spherical radius/thickness ghost construction failed");
+  FreeVector(thickness);
+  ProblemDataRadiusCenter(problem_data) = radius;
+}
+
 /*--------------------------------------------------------------------------
  * SetProblemData
  *--------------------------------------------------------------------------*/
@@ -150,6 +310,9 @@ void          SetProblemData(
     PFModuleInvokeType(dzScaleInvoke, dz_mult,                   //RMM
                        (problem_data,
                         ProblemDataZmult(problem_data)));
+
+    /* Static spherical geometry is loaded only after actual layer thicknesses. */
+    ReadSphericalRadius(problem_data);
 
 
     PFModuleInvokeType(realSpaceZInvoke, real_space_z,

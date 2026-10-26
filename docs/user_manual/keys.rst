@@ -7580,3 +7580,94 @@ file, slopes and meteorological forcing.
       parflow/test/washita/parflow_input/press.init.nc
       parflow/test/washita/parflow_input/slopes.nc
       parflow/test/washita/clm_input/metForcing.nc
+
+Experimental spherical groundwater geometry
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The experimental ``codex/spherical-coordinates-clean`` implementation currently
+covers Richards storage/source volumes, internal groundwater fluxes and their
+Jacobian, ``FluxConst`` boundaries, and a **top-facing** ``SeepageFace`` boundary.
+Use ``FluxConst`` with value zero on the four sides and bottom for the initial
+closed-boundary experiment. Other boundary types, land-surface coupling,
+overland routing, wells and reservoirs have not been converted in this branch.
+This is not general spherical support for all ParFlow configurations.
+
+Enable the experimental geometry and supply the static radius field::
+
+   pfset Solver.Experimental.SphericalAccumulation 1
+   pfset Solver.SphericalGeometry.RadiusCenter.FileName "radius_center.pfb"
+
+Python configuration uses the same keys::
+
+   run.Solver.Experimental.SphericalAccumulation = 1
+   run.Solver.SphericalGeometry.RadiusCenter.FileName = "radius_center.pfb"
+
+The switch is an integer (0 or 1), defaulting to 0. At 0 the radius key is not
+required, no radius file is read, and Cartesian geometry remains in use. At 1:
+
+* ``ComputationalGrid.Lower.X`` and ``Lower.Y`` are longitude and latitude in
+  **degrees**, and ``ComputationalGrid.DX`` and ``DY`` are positive angular
+  intervals in **degrees**. Conversion to radians is internal. Do not supply
+  radians to these keys.
+* ``ComputationalGrid.DZ`` is in **meters**. Existing ``dzScale`` / ``dz_mult``
+  settings still define each cell's actual radial thickness as ``DZ * z_mult``.
+  The radius field does not replace the thickness multiplier.
+* The grid must be unrefined. Latitude boundaries must lie strictly between
+  -90 and 90 degrees, longitude span must not exceed 360 degrees. Longitude
+  wrap-around/periodic coupling is not added by this feature.
+* Input X/Y slope fields are dimensionless elevation differences divided by
+  actual metric distances, as in the existing terrain-following approximation.
+
+``Solver.SphericalGeometry.RadiusCenter.FileName`` is a standard scalar **3-D
+PFB**, with global dimensions ``NX, NY, NZ`` matching ``ComputationalGrid``.
+Each value is the cell center's distance to Earth's center in **meters**
+(typically about 6.37 million meters, not elevation or depth). Supply finite,
+positive values throughout the entire rectangular array, including inactive
+cells. The file contains **no ghost cells**. In Python ``write_pfb`` uses array
+shape ``(NZ, NY, NX)``, indexed ``radius[k, j, i]``; increasing ``k`` is upward,
+radially outward. The input radius must be the midpoint of the cell's radial
+interfaces. Thus adjacent centers in a column must satisfy
+``radius[k+1] - radius[k] = (thickness[k+1] + thickness[k]) / 2``.
+
+For example, the following constructs three layers, with thicknesses specified
+from bottom to top. Replace the dimensions, elevation and thickness data with
+those of the actual model::
+
+   import numpy as np
+   from parflow.tools.io import write_pfb
+
+   nx, ny = 4, 3
+   lon0, lat0 = 100.0, 35.0
+   dlon, dlat = 0.1, 0.1          # degrees
+   dz = 10.0                     # ComputationalGrid.DZ, meters
+   lower_z = 0.0                 # same metadata as ComputationalGrid.Lower.Z
+   earth_radius = 6371000.0      # used only when preparing this file
+   surface_elevation = np.zeros((ny, nx))   # meters above this reference sphere
+   thickness = np.broadcast_to(
+       np.array([20.0, 10.0, 5.0])[:, None, None], (3, ny, nx)
+   ).copy()                      # meters, bottom to top
+   bottom_radius = earth_radius + surface_elevation - thickness.sum(axis=0)
+   radius_center = bottom_radius[None, :, :] + np.cumsum(thickness, axis=0) - thickness / 2
+
+   write_pfb("radius_center.pfb", radius_center,
+             x=lon0, y=lat0, z=lower_z, dx=dlon, dy=dlat, dz=dz)
+   # Configure z_mult to thickness / dz (here the layer multipliers are 2, 1, 0.5).
+   # Set ComputationalGrid.NZ = 3 and the matching NX, NY and background metadata.
+
+Use the normal ParFlow distribution step for the chosen process topology,
+for example ``run.dist("radius_center.pfb")`` in Python or
+``pfdistribute radius_center.pfb`` in Tcl, before starting the simulation.
+Distribute again if P/Q/R changes. PFB metadata should match the computational
+background; the loader checks the global dimensions and uses the configured
+background, rather than PFB metadata, to calculate geometry.
+
+The field is read once during ``SetProblemData``, after layer thickness is
+formed. MPI face, edge and corner ghosts are exchanged using the existing
+Godunov update package with a three-layer allocation. The flow calculation
+uses its first halo layer. Outside the rectangular computational box,
+horizontal radii are extended from the nearest column and top/bottom radii
+are extrapolated by the boundary-cell thickness. Thickness ghosts are filled
+consistently. These outside values are numerical geometry extensions, not
+additional active cells and not an imposed water flux. Interior inactive
+locations retain the radii supplied in the PFB. The field is owned and freed
+by ``ProblemData``.

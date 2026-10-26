@@ -400,7 +400,7 @@ void    RichardsJacobianEval(
   {
     double radians_per_degree = acos(-1.0) / 180.0;
     if (radius_center == NULL)
-      InputError("Spherical accumulation requires a populated cell-center radius vector");
+      InputError("%s%s", "Spherical accumulation requires a populated cell-center radius vector", "");
     longitude_width = BackgroundDX(GlobalsBackground) * radians_per_degree;
     latitude_origin = BackgroundY(GlobalsBackground) * radians_per_degree;
     latitude_width = BackgroundDY(GlobalsBackground) * radians_per_degree;

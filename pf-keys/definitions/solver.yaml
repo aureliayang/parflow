@@ -34,6 +34,33 @@ Solver:
           - Impes
           - Richards
 
+  Experimental:
+    __doc__: 'Experimental solver capabilities'
+    SphericalAccumulation:
+      help: >
+        [Type: int] Experimental spherical groundwater geometry (0=off, 1=on).
+        When enabled, ComputationalGrid.Lower.X/Y and DX/DY are degrees,
+        vertical lengths and RadiusCenter values are meters. Currently scoped
+        to FluxConst boundaries and a top SeepageFace boundary, without overland flow.
+      default: 0
+      domains:
+        IntValue:
+          min_value: 0
+          max_value: 1
+
+  SphericalGeometry:
+    __doc__: 'Static input for experimental spherical geometry'
+    RadiusCenter:
+      FileName:
+        help: >
+          [Type: string] Three-dimensional PFB of cell-center distance to Earth's
+          center in meters. Must match ComputationalGrid.NX/NY/NZ and include
+          finite positive values in inactive cells. No ghost cells in the file.
+          Required when Solver.Experimental.SphericalAccumulation is 1.
+        domains:
+          AnyString:
+          ValidFile:
+
   AbsTol:
     help: >
       [Type: double] This value gives the absolute tolerance for the linear solve algorithm.
