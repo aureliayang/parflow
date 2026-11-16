@@ -7595,77 +7595,60 @@ This is not general spherical support for all ParFlow configurations.
 Enable the experimental geometry in the Python run script::
 
    run.Solver.Experimental.SphericalAccumulation = True
-   run.Solver.SphericalGeometry.RadiusCenter.FileName = "radius_center.pfb"
+   run.Solver.SphericalGeometry.ReferenceRadius = 6371000.0  # meters
 
-The switch is a Python boolean, defaulting to ``False``. At ``False`` the radius
-key is not required, no radius file is read, and Cartesian geometry remains in
-use. At ``True``:
+The switch is a Python boolean, defaulting to ``False``. At ``False`` the
+reference radius is not required and Cartesian geometry remains in use. At
+``True`` the reference radius is required and must be finite and strictly
+positive. The former ``RadiusCenter.FileName`` input and three-dimensional radius
+PFB have been removed; no radius file needs to be generated or distributed.
 
 * ``ComputationalGrid.Lower.X`` and ``Lower.Y`` are longitude and latitude in
   **degrees**, and ``ComputationalGrid.DX`` and ``DY`` are positive angular
-  intervals in **degrees**. Conversion to radians is internal. Do not supply
-  radians to these keys.
-* ``ComputationalGrid.DZ`` is in **meters**. Existing ``dzScale`` / ``dz_mult``
-  settings still define each cell's actual radial thickness as ``DZ * z_mult``.
-  The radius field does not replace the thickness multiplier.
+  intervals in **degrees**. Conversion to radians is internal.
+* ``ComputationalGrid.DZ`` remains in **meters**. Actual vertical thickness is
+  ``DZ * z_mult``. Vertical center spacing remains the mean of adjacent layer
+  thicknesses, not a reference radius or an angular increment.
 * The grid must be unrefined. Latitude boundaries must lie strictly between
   -90 and 90 degrees, longitude span must not exceed 360 degrees. Longitude
   wrap-around/periodic coupling is not added by this feature.
-* Input X/Y slope fields are dimensionless elevation differences divided by
-  actual metric distances, as in the existing terrain-following approximation.
+* Input X/Y slopes are dimensionless elevation differences divided by reference
+  sphere horizontal distances. For interface slopes, use signed DEM differences
+  divided by ``R*cos(latitude)*delta_longitude`` or ``R*delta_latitude`` (angles
+  in radians). Keep the placement/sign convention consistent with the selected
+  ``Solver.TerrainFollowingGrid.SlopeUpwindFormulation``. DEM elevation does not
+  change the radius used for internal geometry.
 
-``Solver.SphericalGeometry.RadiusCenter.FileName`` is a standard scalar **3-D
-PFB**, with global dimensions ``NX, NY, NZ`` matching ``ComputationalGrid``.
-Each value is the cell center's distance to Earth's center in **meters**
-(typically about 6.37 million meters, not elevation or depth). Supply finite,
-positive values throughout the entire rectangular array, including inactive
-cells. The file contains **no ghost cells**. In Python ``write_pfb`` uses array
-shape ``(NZ, NY, NX)``, indexed ``radius[k, j, i]``; increasing ``k`` is upward,
-radially outward. The input radius must be the midpoint of the cell's radial
-interfaces. Thus adjacent centers in a column must satisfy
-``radius[k+1] - radius[k] = (thickness[k+1] + thickness[k]) / 2``.
+Reference-sphere thin-layer approximation
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-For example, the following constructs three layers, with thicknesses specified
-from bottom to top. Replace the dimensions, elevation and thickness data with
-those of the actual model::
+All layers use the same reference radius ``R``. At cell latitude boundaries
+``phi_s, phi_n``, angular widths ``dlambda, dphi`` and actual thickness ``t``,
+geometry is defined consistently in the residual and Jacobian as::
 
-   import numpy as np
-   from parflow.tools.io import write_pfb
+   phi_c = (phi_s + phi_n) / 2
+   dx = R * cos(phi_c) * dlambda
+   dy = R * dphi
+   area_E = area_W = R * dphi * t
+   area_N = R * cos(phi_n) * dlambda * t
+   area_S = R * cos(phi_s) * dlambda * t
+   area_T = area_B = R**2 * dlambda * (sin(phi_n) - sin(phi_s))
+   volume = area_T * t
 
-   nx, ny = 4, 3
-   lon0, lat0 = 100.0, 35.0
-   dlon, dlat = 0.1, 0.1          # degrees
-   dz = 10.0                     # ComputationalGrid.DZ, meters
-   lower_z = 0.0                 # same metadata as ComputationalGrid.Lower.Z
-   earth_radius = 6371000.0      # used only when preparing this file
-   surface_elevation = np.zeros((ny, nx))   # meters above this reference sphere
-   thickness = np.broadcast_to(
-       np.array([20.0, 10.0, 5.0])[:, None, None], (3, ny, nx)
-   ).copy()                      # meters, bottom to top
-   bottom_radius = earth_radius + surface_elevation - thickness.sum(axis=0)
-   radius_center = bottom_radius[None, :, :] + np.cumsum(thickness, axis=0) - thickness / 2
+The sine difference is evaluated as ``2*cos(phi_c)*sin(dphi/2)`` for numerical
+stability. This deliberately ignores the change of horizontal metric with
+absolute elevation and depth; it is not the exact volume of a finite-thickness
+spherical shell. Do not substitute equal radii into the former shell difference
+formulas: they would produce zero area/volume. The existing TFG slope treatment
+is retained; its combination with this reference geometry needs validation.
 
-   write_pfb("radius_center.pfb", radius_center,
-             x=lon0, y=lat0, z=lower_z, dx=dlon, dy=dlat, dz=dz)
-   # Configure z_mult to thickness / dz (here the layer multipliers are 2, 1, 0.5).
-   # Set ComputationalGrid.NZ = 3 and the matching NX, NY and background metadata.
-
-Use ``run.dist("radius_center.pfb")`` for the chosen process topology before
-starting the simulation.
-Distribute again if P/Q/R changes. PFB metadata should match the computational
-background; the loader checks the global dimensions and uses the configured
-background, rather than PFB metadata, to calculate geometry.
-
-The field is read once during ``SetProblemData``, after layer thickness is
-formed. MPI face, edge and corner ghosts are exchanged using the existing
-Godunov update package with a three-layer allocation. The flow calculation
-uses its first halo layer. Outside the rectangular computational box,
-horizontal radii are extended from the nearest column and top/bottom radii
-are extrapolated by the boundary-cell thickness. Thickness ghosts are filled
-consistently. These outside values are numerical geometry extensions, not
-additional active cells and not an imposed water flux. Interior inactive
-locations retain the radii supplied in the PFB. The field is owned and freed
-by ``ProblemData``.
+The radius is read once during ``SetProblemData``. Only thickness halos require
+communication: a temporary three-halo vector uses the Godunov update package to
+fill face, edge and corner neighbors; physical-boundary thicknesses are extended
+from the nearest column/layer. No radius vector is allocated or communicated.
+The feature retains the initial test scope: top SeepageFace, side/bottom
+FluxConst, no overland routing. It does not convert other geometry-dependent
+features such as wells or reservoirs.
 
 Python key generation
 ^^^^^^^^^^^^^^^^^^^^^

@@ -392,15 +392,15 @@ void    RichardsJacobianEval(
   /* Match NlFunctionEval geometry for storage, internal fluxes, FluxBC,
    * and the top SeepageFaceBC. Other boundary types remain Cartesian. */
   int spherical_accumulation = public_xtra->spherical_accumulation;
-  Vector *radius_center = ProblemDataRadiusCenter(problem_data);
+  double radius = ProblemDataReferenceRadius(problem_data);
   double longitude_width = 0.0;
   double latitude_origin = 0.0;
   double latitude_width = 0.0;
   if (spherical_accumulation)
   {
     double radians_per_degree = acos(-1.0) / 180.0;
-    if (radius_center == NULL)
-      InputError("%s%s", "Spherical accumulation requires a populated cell-center radius vector", "");
+    if (!isfinite(radius) || radius <= 0.0)
+      InputError("%s%s", "Spherical geometry requires a finite positive reference radius", "");
     longitude_width = BackgroundDX(GlobalsBackground) * radians_per_degree;
     latitude_origin = BackgroundY(GlobalsBackground) * radians_per_degree;
     latitude_width = BackgroundDY(GlobalsBackground) * radians_per_degree;
@@ -416,10 +416,6 @@ void    RichardsJacobianEval(
   ForSubgridI(is, GridSubgrids(grid))
   {
     subgrid = GridSubgrid(grid, is);
-
-    Subvector *radius_sub = spherical_accumulation
-                            ? VectorSubvector(radius_center, is) : NULL;
-    double *radius_dat = radius_sub != NULL ? SubvectorData(radius_sub) : NULL;
 
     J_sub = MatrixSubmatrix(J, is);
     cp = SubmatrixStencilData(J_sub, 0);
@@ -479,9 +475,7 @@ void    RichardsJacobianEval(
       double vol2 = vol * z_mult_dat[ipo];
       if (spherical_accumulation)
       {
-        int iradius = SubvectorEltIndex(radius_sub, i, j, k);
         int izmult = SubvectorEltIndex(z_mult_sub, i, j, k);
-        double radius = radius_dat[iradius];
         double thickness = dz * z_mult_dat[izmult];
         double refinement = pow(2.0, r);
         double delta_lambda = longitude_width / refinement;
@@ -491,7 +485,7 @@ void    RichardsJacobianEval(
         double latitude_factor = 2.0 * cos(0.5 * (phi_north + phi_south))
                                  * sin(0.5 * delta_phi);
         /* Geometry is static with respect to pressure: only replace volume. */
-        vol2 = thickness * (radius * radius + thickness * thickness / 12.0)
+        vol2 = thickness * radius * radius
                * delta_lambda * latitude_factor;
       }
       cp[im] += (sdp[iv] * dp[iv] + sp[iv] * ddp[iv])
@@ -559,8 +553,6 @@ void    RichardsJacobianEval(
   ForSubgridI(is, GridSubgrids(grid))
   {
     subgrid = GridSubgrid(grid, is);
-    Subvector *radius_sub = spherical_accumulation ? VectorSubvector(radius_center, is) : NULL;
-    double *radius_dat = radius_sub != NULL ? SubvectorData(radius_sub) : NULL;
     Subvector *diag_sub = spherical_accumulation ? VectorSubvector(flux_diag_x, is) : NULL;
     double *diag_x = spherical_accumulation ? SubvectorData(diag_sub) : NULL;
     double *diag_y = spherical_accumulation ? SubvectorData(VectorSubvector(flux_diag_y, is)) : NULL;
@@ -658,10 +650,7 @@ void    RichardsJacobianEval(
       double area_upper = ffz;
       if (spherical_accumulation)
       {
-        int iradius = SubvectorEltIndex(radius_sub, i, j, k);
-        int iradius_top = SubvectorEltIndex(radius_sub, i, j, k + 1);
         int izmult = SubvectorEltIndex(z_mult_sub, i, j, k);
-        double radius = radius_dat[iradius];
         double thickness = dz * z_mult_dat[izmult];
         double refinement = pow(2.0, r);
         double delta_lambda = longitude_width / refinement;
@@ -669,14 +658,13 @@ void    RichardsJacobianEval(
         double phi_south = latitude_origin + j * delta_phi;
         double phi_north = phi_south + delta_phi;
         double phi_center = 0.5 * (phi_south + phi_north);
-        double radius_top = radius + 0.5 * thickness;
         double latitude_factor = 2.0 * cos(phi_center) * sin(0.5 * delta_phi);
         distance_x = radius * cos(phi_center) * delta_lambda;
         distance_y = radius * delta_phi;
-        distance_z = radius_dat[iradius_top] - radius;
+        /* Vertical spacing retains the actual layer thicknesses. */
         area_right = radius * thickness * delta_phi;
         area_front = radius * thickness * cos(phi_north) * delta_lambda;
-        area_upper = radius_top * radius_top * delta_lambda * latitude_factor;
+        area_upper = radius * radius * delta_lambda * latitude_factor;
       }
 
       double prod = rpp[ip] * dp[ip];
@@ -1058,8 +1046,6 @@ void    RichardsJacobianEval(
   ForSubgridI(is, GridSubgrids(grid))
   {
     subgrid = GridSubgrid(grid, is);
-    Subvector *radius_sub = spherical_accumulation ? VectorSubvector(radius_center, is) : NULL;
-    double *radius_dat = radius_sub != NULL ? SubvectorData(radius_sub) : NULL;
     Subvector *diag_sub = spherical_accumulation ? VectorSubvector(flux_diag_x, is) : NULL;
     double *diag_x = spherical_accumulation ? SubvectorData(diag_sub) : NULL;
     double *diag_y = spherical_accumulation ? SubvectorData(VectorSubvector(flux_diag_y, is)) : NULL;
@@ -1448,15 +1434,11 @@ void    RichardsJacobianEval(
           double top_area = vol / dz;
           if (spherical_accumulation)
           {
-            int iradius = SubvectorEltIndex(radius_sub, i, j, k);
-            int izmult = SubvectorEltIndex(z_mult_sub, i, j, k);
-            double thickness = dz * z_mult_dat[izmult];
-            double radius_top = radius_dat[iradius] + 0.5 * thickness;
             double refinement = pow(2.0, SubgridRX(subgrid));
             double delta_lambda = longitude_width / refinement;
             double delta_phi = latitude_width / refinement;
             double phi_center = latitude_origin + (j + 0.5) * delta_phi;
-            top_area = radius_top * radius_top * delta_lambda
+            top_area = radius * radius * delta_lambda
                        * 2.0 * cos(phi_center) * sin(0.5 * delta_phi);
           }
           cp[im] += top_area * dt;

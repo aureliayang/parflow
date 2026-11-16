@@ -329,17 +329,17 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
   /* Experimental geometry hook: storage/source volumes and internal face fluxes are converted.
    * This is NOT yet a complete spherical-coordinate flow solver.
    * Background X/Y and DX/DY are longitude/latitude in degrees when enabled.
-   * The radius vector must be populated before evaluating this function. */
+   * Horizontal geometry uses one reference radius; vertical layer thickness is unchanged. */
   int spherical_accumulation = public_xtra->spherical_accumulation;
-  Vector *radius_center = ProblemDataRadiusCenter(problem_data);
+  double radius = ProblemDataReferenceRadius(problem_data);
   double radians_per_degree = acos(-1.0) / 180.0;
   double longitude_width = 0.0;
   double latitude_origin = 0.0;
   double latitude_width = 0.0;
   if (spherical_accumulation)
   {
-    if (radius_center == NULL)
-      InputError("%s%s", "Spherical accumulation requires a populated cell-center radius vector", "");
+    if (!isfinite(radius) || radius <= 0.0)
+      InputError("%s%s", "Spherical geometry requires a finite positive reference radius", "");
     longitude_width = BackgroundDX(GlobalsBackground) * radians_per_degree;
     latitude_origin = BackgroundY(GlobalsBackground) * radians_per_degree;
     latitude_width = BackgroundDY(GlobalsBackground) * radians_per_degree;
@@ -350,10 +350,6 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
   ForSubgridI(is, GridSubgrids(grid))
   {
     subgrid = GridSubgrid(grid, is);
-
-    Subvector *radius_sub = spherical_accumulation
-                            ? VectorSubvector(radius_center, is) : NULL;
-    double *radius_dat = radius_sub != NULL ? SubvectorData(radius_sub) : NULL;
 
     d_sub = VectorSubvector(density, is);
     od_sub = VectorSubvector(old_density, is);
@@ -429,9 +425,7 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
       double cell_volume = vol * del_x_slope * del_y_slope * z_mult_dat[ip];
       if (spherical_accumulation)
       {
-        int iradius = SubvectorEltIndex(radius_sub, i, j, k);
         int izmult = SubvectorEltIndex(z_mult_sub, i, j, k);
-        double radius = radius_dat[iradius];
         double thickness = dz * z_mult_dat[izmult];
         /* j is a global index; r is the grid refinement exponent, NOT radius. */
         double refinement = pow(2.0, r);
@@ -439,12 +433,10 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
         double delta_phi = latitude_width / refinement;
         double phi_south = latitude_origin + j * delta_phi;
         double phi_north = phi_south + delta_phi;
-        /* r_top = radius + thickness/2; r_bottom = radius - thickness/2.
-         * (r_top^3-r_bottom^3)/3 = thickness*(radius^2+thickness^2/12).
-         * The sine difference is also evaluated without subtracting close values. */
+        /* Reference-sphere area times actual layer thickness (thin-layer approximation). */
         double latitude_factor = 2.0 * cos(0.5 * (phi_north + phi_south))
                                  * sin(0.5 * delta_phi);
-        cell_volume = thickness * (radius * radius + thickness * thickness / 12.0)
+        cell_volume = thickness * radius * radius
                              * delta_lambda * latitude_factor;
       }
 
@@ -457,10 +449,6 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
   ForSubgridI(is, GridSubgrids(grid))
   {
     subgrid = GridSubgrid(grid, is);
-
-    Subvector *radius_sub = spherical_accumulation
-                            ? VectorSubvector(radius_center, is) : NULL;
-    double *radius_dat = radius_sub != NULL ? SubvectorData(radius_sub) : NULL;
 
     ss_sub = VectorSubvector(sstorage, is);
 
@@ -523,11 +511,9 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
       double cell_volume = vol * del_x_slope * del_y_slope * z_mult_dat[ip];
       if (spherical_accumulation)
       {
-        int iradius = SubvectorEltIndex(radius_sub, i, j, k);
         int izmult = SubvectorEltIndex(z_mult_sub, i, j, k);
-        double radius = radius_dat[iradius];
         double thickness = dz * z_mult_dat[izmult];
-        /* Same shell volume as the porosity accumulation term above. */
+        /* Same reference-sphere thin-layer volume as the porosity accumulation term above. */
         double refinement = pow(2.0, r);
         double delta_lambda = longitude_width / refinement;
         double delta_phi = latitude_width / refinement;
@@ -535,7 +521,7 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
         double phi_north = phi_south + delta_phi;
         double latitude_factor = 2.0 * cos(0.5 * (phi_north + phi_south))
                                  * sin(0.5 * delta_phi);
-        cell_volume = thickness * (radius * radius + thickness * thickness / 12.0)
+        cell_volume = thickness * radius * radius
                              * delta_lambda * latitude_factor;
       }
 
@@ -553,10 +539,6 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
   ForSubgridI(is, GridSubgrids(grid))
   {
     subgrid = GridSubgrid(grid, is);
-
-    Subvector *radius_sub = spherical_accumulation
-                            ? VectorSubvector(radius_center, is) : NULL;
-    double *radius_dat = radius_sub != NULL ? SubvectorData(radius_sub) : NULL;
 
     s_sub = VectorSubvector(source, is);
     f_sub = VectorSubvector(fval, is);
@@ -616,11 +598,9 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
       double cell_volume = vol * del_x_slope * del_y_slope * z_mult_dat[ip];
       if (spherical_accumulation)
       {
-        int iradius = SubvectorEltIndex(radius_sub, i, j, k);
         int izmult = SubvectorEltIndex(z_mult_sub, i, j, k);
-        double radius = radius_dat[iradius];
         double thickness = dz * z_mult_dat[izmult];
-        /* Same shell volume as both storage accumulation terms above. */
+        /* Same reference-sphere thin-layer volume as both storage accumulation terms above. */
         double refinement = pow(2.0, r);
         double delta_lambda = longitude_width / refinement;
         double delta_phi = latitude_width / refinement;
@@ -628,7 +608,7 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
         double phi_north = phi_south + delta_phi;
         double latitude_factor = 2.0 * cos(0.5 * (phi_north + phi_south))
                                  * sin(0.5 * delta_phi);
-        cell_volume = thickness * (radius * radius + thickness * thickness / 12.0)
+        cell_volume = thickness * radius * radius
                              * delta_lambda * latitude_factor;
       }
 
@@ -718,11 +698,8 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
   {
     subgrid = GridSubgrid(grid, is);
 
-    /* Radius and thickness ghosts must be populated just like pressure ghosts.
+    /* Thickness ghosts must be populated just like pressure ghosts.
      * The loop below also visits the negative-side domain ghost cells. */
-    Subvector *radius_sub = spherical_accumulation
-                            ? VectorSubvector(radius_center, is) : NULL;
-    double *radius_dat = radius_sub != NULL ? SubvectorData(radius_sub) : NULL;
 
     /* velocity vectors jjb */
     vx_sub = VectorSubvector(x_velocity, is);
@@ -830,10 +807,7 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
 
       if (spherical_accumulation)
       {
-        int iradius = SubvectorEltIndex(radius_sub, i, j, k);
-        int iradius_top = SubvectorEltIndex(radius_sub, i, j, k + 1);
         int izmult = SubvectorEltIndex(z_mult_sub, i, j, k);
-        double radius = radius_dat[iradius];
         double thickness = dz * z_mult_dat[izmult];
         double refinement = pow(2.0, r);
         double delta_lambda = longitude_width / refinement;
@@ -841,20 +815,19 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
         double phi_south = latitude_origin + j * delta_phi;
         double phi_north = phi_south + delta_phi;
         double phi_center = 0.5 * (phi_south + phi_north);
-        double radius_top = radius + 0.5 * thickness;
         double latitude_factor = 2.0 * cos(phi_center) * sin(0.5 * delta_phi);
 
-        /* Local spherical-shell geometry, retaining the existing TFG flux
+        /* Reference-sphere thin-layer geometry, retaining the existing TFG flux
          * approximation. Horizontal distances are arc lengths, not 3-D chords.
-         * radius*thickness = (r_top^2-r_bottom^2)/2, evaluated stably.
+         * Reference-radius arc length times actual layer thickness.
          * Geometry is computed once by the positive-face owner and the same
          * integrated flow is added with opposite signs to the two residuals. */
         distance_x = radius * cos(phi_center) * delta_lambda;
         distance_y = radius * delta_phi;
-        distance_z = radius_dat[iradius_top] - radius;
+        /* Vertical spacing retains the actual layer thicknesses. */
         area_right = radius * thickness * delta_phi;
         area_front = radius * thickness * cos(phi_north) * delta_lambda;
-        area_upper = radius_top * radius_top * delta_lambda * latitude_factor;
+        area_upper = radius * radius * delta_lambda * latitude_factor;
       }
 
       double x_dir_g = NAN;
@@ -997,10 +970,6 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
   ForSubgridI(is, GridSubgrids(grid))
   {
     subgrid = GridSubgrid(grid, is);
-
-    Subvector *radius_sub = spherical_accumulation
-                            ? VectorSubvector(radius_center, is) : NULL;
-    double *radius_dat = radius_sub != NULL ? SubvectorData(radius_sub) : NULL;
 
     d_sub = VectorSubvector(density, is);
     rp_sub = VectorSubvector(rel_perm, is);
@@ -1421,9 +1390,7 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
         dir = -1;
         if (spherical_accumulation)
         {
-          int iradius = SubvectorEltIndex(radius_sub, i, j, k);
           int izmult = SubvectorEltIndex(z_mult_sub, i, j, k);
-          double radius = radius_dat[iradius];
           double thickness = dz * z_mult_dat[izmult];
           double refinement = pow(2.0, r);
           double delta_phi = latitude_width / refinement;
@@ -1463,9 +1430,7 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
         dir = 1;
         if (spherical_accumulation)
         {
-          int iradius = SubvectorEltIndex(radius_sub, i, j, k);
           int izmult = SubvectorEltIndex(z_mult_sub, i, j, k);
-          double radius = radius_dat[iradius];
           double thickness = dz * z_mult_dat[izmult];
           double refinement = pow(2.0, r);
           double delta_phi = latitude_width / refinement;
@@ -1505,9 +1470,7 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
         dir = -1;
         if (spherical_accumulation)
         {
-          int iradius = SubvectorEltIndex(radius_sub, i, j, k);
           int izmult = SubvectorEltIndex(z_mult_sub, i, j, k);
-          double radius = radius_dat[iradius];
           double thickness = dz * z_mult_dat[izmult];
           double refinement = pow(2.0, r);
           double delta_lambda = longitude_width / refinement;
@@ -1549,9 +1512,7 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
         dir = 1;
         if (spherical_accumulation)
         {
-          int iradius = SubvectorEltIndex(radius_sub, i, j, k);
           int izmult = SubvectorEltIndex(z_mult_sub, i, j, k);
-          double radius = radius_dat[iradius];
           double thickness = dz * z_mult_dat[izmult];
           double refinement = pow(2.0, r);
           double delta_lambda = longitude_width / refinement;
@@ -1593,16 +1554,15 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
         dir = -1;
         if (spherical_accumulation)
         {
-          int iradius = SubvectorEltIndex(radius_sub, i, j, k);
           int izmult = SubvectorEltIndex(z_mult_sub, i, j, k);
           double thickness = dz * z_mult_dat[izmult];
-          double radius_bottom = radius_dat[iradius] - 0.5 * thickness;
+
           double refinement = pow(2.0, r);
           double delta_lambda = longitude_width / refinement;
           double delta_phi = latitude_width / refinement;
           double phi_center = latitude_origin + (j + 0.5) * delta_phi;
           double latitude_factor = 2.0 * cos(phi_center) * sin(0.5 * delta_phi);
-          h = radius_bottom * radius_bottom * delta_lambda * latitude_factor;
+          h = radius * radius * delta_lambda * latitude_factor;
           /* The below-domain cell is not an internal-loop center, so this
            * negative boundary face has no old integrated flux to remove. */
           u_old = 0.0;
@@ -1995,17 +1955,16 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
         h = ffz * del_x_slope * del_y_slope;
         if (spherical_accumulation)
         {
-          int iradius = SubvectorEltIndex(radius_sub, i, j, k);
           int izmult = SubvectorEltIndex(z_mult_sub, i, j, k);
           double thickness = dz * z_mult_dat[izmult];
-          double radius_top = radius_dat[iradius] + 0.5 * thickness;
+
           double refinement = pow(2.0, r);
           double delta_lambda = longitude_width / refinement;
           double delta_phi = latitude_width / refinement;
           double phi_south = latitude_origin + j * delta_phi;
           double phi_center = phi_south + 0.5 * delta_phi;
           double latitude_factor = 2.0 * cos(phi_center) * sin(0.5 * delta_phi);
-          h = radius_top * radius_top * delta_lambda * latitude_factor;
+          h = radius * radius * delta_lambda * latitude_factor;
         }
         vel_vec = vz;
         vel_idx = vz_l + sz_v;

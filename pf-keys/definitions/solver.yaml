@@ -40,7 +40,7 @@ Solver:
       help: >
         [Type: boolean] Experimental spherical groundwater geometry (False=off, True=on).
         When enabled, ComputationalGrid.Lower.X/Y and DX/DY are degrees,
-        vertical lengths and RadiusCenter values are meters. Currently scoped
+        vertical lengths and ReferenceRadius are meters. Currently scoped
         to FluxConst boundaries and a top SeepageFace boundary, without overland flow.
       default: False
       domains:
@@ -48,16 +48,15 @@ Solver:
 
   SphericalGeometry:
     __doc__: 'Static input for experimental spherical geometry'
-    RadiusCenter:
-      FileName:
-        help: >
-          [Type: string] Three-dimensional PFB of cell-center distance to Earth's
-          center in meters. Must match ComputationalGrid.NX/NY/NZ and include
-          finite positive values in inactive cells. No ghost cells in the file.
-          Required when Solver.Experimental.SphericalAccumulation is 1.
-        domains:
-          AnyString:
-          ValidFile:
+    ReferenceRadius:
+      help: >
+        [Type: double] Fixed reference sphere radius in meters, required when
+        Solver.Experimental.SphericalAccumulation is True. Horizontal distances,
+        face areas and volumes use this radius at every layer. Actual vertical
+        thickness remains ComputationalGrid.DZ times z_mult. No radius PFB is read.
+      domains:
+        DoubleValue:
+          min_value: 0.0
 
   AbsTol:
     help: >

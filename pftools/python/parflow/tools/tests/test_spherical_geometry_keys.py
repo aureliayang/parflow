@@ -16,11 +16,12 @@ class SphericalGeometryKeysTest(unittest.TestCase):
         details = run.Solver.Experimental._details_["SphericalAccumulation"]
         self.assertIn("BoolDomain", details["domains"])
 
-    def test_boolean_and_radius_filename_round_trip(self):
+    def test_boolean_and_reference_radius_round_trip(self):
         run = Run("spherical_keys_round_trip")
-        filename = "radius_center.pfb"
-        run.Solver.SphericalGeometry.RadiusCenter.FileName = filename
-        self.assertIn("FileName", run.Solver.SphericalGeometry.RadiusCenter._details_)
+        radius = 6371000.0
+        run.Solver.SphericalGeometry.ReferenceRadius = radius
+        self.assertIn("ReferenceRadius", run.Solver.SphericalGeometry._details_)
+        self.assertNotIn("RadiusCenter", run.Solver.SphericalGeometry._details_)
         with tempfile.TemporaryDirectory() as directory:
             for enabled in (True, False):
                 run.Solver.Experimental.SphericalAccumulation = enabled
@@ -28,7 +29,7 @@ class SphericalGeometryKeysTest(unittest.TestCase):
                 data = read_pfidb(Path(directory) / "spherical.pfidb")
                 self.assertIs(data["Solver.Experimental.SphericalAccumulation"], enabled)
                 self.assertEqual(
-                    data["Solver.SphericalGeometry.RadiusCenter.FileName"], filename
+                    data["Solver.SphericalGeometry.ReferenceRadius"], radius
                 )
 
     def test_boolean_domain_rejects_integer_switch(self):

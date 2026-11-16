@@ -502,8 +502,6 @@ void          FreeProblemData(
     FreeVector(ProblemDataSSlopeX(problem_data));   //RMM
     FreeVector(ProblemDataSSlopeY(problem_data));   //RMM
     FreeVector(ProblemDataZmult(problem_data));   //RMM
-    if (ProblemDataRadiusCenter(problem_data) != NULL)
-      FreeVector(ProblemDataRadiusCenter(problem_data));
     FreeVector(ProblemDataFBx(problem_data));   //RMM
     FreeVector(ProblemDataFBy(problem_data));   //RMM
     FreeVector(ProblemDataFBz(problem_data));   //RMM
