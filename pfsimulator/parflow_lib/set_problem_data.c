@@ -139,7 +139,10 @@ static Vector *ReadFaceMetric(Grid *grid, char *filename, int axis)
     {
       int refinement = (int)FacePFBWord(file, 4, &invalid);
       invalid |= origin[d] < 0 || size[d] <= 0 || size[d] > dims[d]
-                 || origin[d] > dims[d] - size[d] || refinement != 0;
+                 || origin[d] > dims[d] - size[d]
+                 /* Python write_pfb emits 1; native unrefined grids emit 0.
+                  * Both use the same dense, unit-stride payload layout. */
+                 || (refinement != 0 && refinement != 1);
     }
     CheckSphericalGeometry(invalid, "Face metric PFB contains an invalid or refined subgrid");
     for (int k = origin[2]; k < origin[2] + size[2]; k++)

@@ -107,12 +107,12 @@ int main(int argc,char **argv){
 '''
 
 
-def write_pfb(path, nx, ny, nz, value):
+def write_pfb(path, nx, ny, nz, value, refinement=1):
     # Multiple x subgrids exercise general whole-file PFB layout.
     with open(path, "wb") as f:
         f.write(struct.pack(">3d3i3di", 0, 0, 0, nx, ny, nz, 100, 200, 10, 2))
         for start, width in ((0, 2), (2, nx - 2)):
-            f.write(struct.pack(">9i", start, 0, 0, width, ny, nz, 0, 0, 0))
+            f.write(struct.pack(">9i", start, 0, 0, width, ny, nz, refinement, refinement, refinement))
             for k in range(nz):
                 for j in range(ny):
                     for i in range(start, start + width):
@@ -134,6 +134,13 @@ def main():
             write_pfb(d / "dx.pfb", 4, 4, 2, lambda i, j, k: 1 if ones else 1 + .1*j + .01*k)
             write_pfb(d / "dy.pfb", 5, 3, 2, lambda i, j, k: 1 if ones else 1 + .03*i)
             subprocess.run([str(d / "test"), str(d / "dx.pfb"), str(d / "dy.pfb"), str(int(ones))], check=True, env=env)
+        # Native C output may use zero in these header fields.
+        write_pfb(d / "dx.pfb", 4, 4, 2, lambda *args: 1, refinement=0)
+        write_pfb(d / "dy.pfb", 5, 3, 2, lambda *args: 1, refinement=0)
+        subprocess.run([str(d / "test"), str(d / "dx.pfb"), str(d / "dy.pfb"), "1"], check=True, env=env)
+        write_pfb(d / "dx.pfb", 4, 4, 2, lambda *args: 1, refinement=2)
+        result = subprocess.run([str(d / "test"), str(d / "dx.pfb"), str(d / "dy.pfb"), "1"], env=env, capture_output=True)
+        assert result.returncode == 2, result.stderr
         for bad in (0, -1, float("nan")):
             write_pfb(d / "dx.pfb", 4, 4, 2, lambda *args: bad)
             result = subprocess.run([str(d / "test"), str(d / "dx.pfb"), str(d / "dy.pfb"), "0"], env=env, capture_output=True)
