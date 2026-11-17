@@ -27,6 +27,7 @@
 **********************************************************************EHEADER*/
 
 #include "parflow.h"
+#include "face_metrics.h"
 #include "seepage.h"
 #include "llnlmath.h"
 #include "llnltyps.h"
@@ -334,19 +335,17 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
    * Background X/Y and DX/DY are longitude/latitude in degrees when enabled.
    * Horizontal geometry uses one reference radius; vertical layer thickness is unchanged. */
   int spherical_accumulation = public_xtra->spherical_accumulation;
-  double radius = ProblemDataReferenceRadius(problem_data);
   double radians_per_degree = acos(-1.0) / 180.0;
   double longitude_width = 0.0;
   double latitude_origin = 0.0;
   double latitude_width = 0.0;
   if (spherical_accumulation)
   {
-    if (!isfinite(radius) || radius <= 0.0)
-      InputError("%s%s", "Spherical geometry requires a finite positive reference radius", "");
     longitude_width = BackgroundDX(GlobalsBackground) * radians_per_degree;
     latitude_origin = BackgroundY(GlobalsBackground) * radians_per_degree;
     latitude_width = BackgroundDY(GlobalsBackground) * radians_per_degree;
   }
+  spherical_accumulation |= problem_data->face_dx_scale != NULL;
 
   /* Calculate accumulation terms for the function values */
 
@@ -428,19 +427,11 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
       double cell_volume = vol * del_x_slope * del_y_slope * z_mult_dat[ip];
       if (spherical_accumulation)
       {
-        int izmult = SubvectorEltIndex(z_mult_sub, i, j, k);
-        double thickness = dz * z_mult_dat[izmult];
-        /* j is a global index; r is the grid refinement exponent, NOT radius. */
-        double refinement = pow(2.0, r);
-        double delta_lambda = longitude_width / refinement;
-        double delta_phi = latitude_width / refinement;
-        double phi_south = latitude_origin + j * delta_phi;
-        double phi_north = phi_south + delta_phi;
-        /* Reference-sphere area times actual layer thickness (thin-layer approximation). */
-        double latitude_factor = 2.0 * cos(0.5 * (phi_north + phi_south))
-                                 * sin(0.5 * delta_phi);
-        cell_volume = thickness * radius * radius
-                             * delta_lambda * latitude_factor;
+        PFHorizontalGeometry geometry = PFGetHorizontalGeometry(
+          problem_data, is, i, j, k, dx, dy,
+          dz * PFFaceScale(ProblemDataZmult(problem_data), is, i, j, k),
+          longitude_width, latitude_origin, latitude_width, r);
+        cell_volume = geometry.volume;
       }
 
       fp[ip] = (sp[ip] * dp[ip] - osp[ip] * odp[ip]) * pop[ipo] * cell_volume;
@@ -514,18 +505,11 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
       double cell_volume = vol * del_x_slope * del_y_slope * z_mult_dat[ip];
       if (spherical_accumulation)
       {
-        int izmult = SubvectorEltIndex(z_mult_sub, i, j, k);
-        double thickness = dz * z_mult_dat[izmult];
-        /* Same reference-sphere thin-layer volume as the porosity accumulation term above. */
-        double refinement = pow(2.0, r);
-        double delta_lambda = longitude_width / refinement;
-        double delta_phi = latitude_width / refinement;
-        double phi_south = latitude_origin + j * delta_phi;
-        double phi_north = phi_south + delta_phi;
-        double latitude_factor = 2.0 * cos(0.5 * (phi_north + phi_south))
-                                 * sin(0.5 * delta_phi);
-        cell_volume = thickness * radius * radius
-                             * delta_lambda * latitude_factor;
+        PFHorizontalGeometry geometry = PFGetHorizontalGeometry(
+          problem_data, is, i, j, k, dx, dy,
+          dz * PFFaceScale(ProblemDataZmult(problem_data), is, i, j, k),
+          longitude_width, latitude_origin, latitude_width, r);
+        cell_volume = geometry.volume;
       }
 
       fp[ip] += ss[ip] * cell_volume
@@ -601,18 +585,11 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
       double cell_volume = vol * del_x_slope * del_y_slope * z_mult_dat[ip];
       if (spherical_accumulation)
       {
-        int izmult = SubvectorEltIndex(z_mult_sub, i, j, k);
-        double thickness = dz * z_mult_dat[izmult];
-        /* Same reference-sphere thin-layer volume as both storage accumulation terms above. */
-        double refinement = pow(2.0, r);
-        double delta_lambda = longitude_width / refinement;
-        double delta_phi = latitude_width / refinement;
-        double phi_south = latitude_origin + j * delta_phi;
-        double phi_north = phi_south + delta_phi;
-        double latitude_factor = 2.0 * cos(0.5 * (phi_north + phi_south))
-                                 * sin(0.5 * delta_phi);
-        cell_volume = thickness * radius * radius
-                             * delta_lambda * latitude_factor;
+        PFHorizontalGeometry geometry = PFGetHorizontalGeometry(
+          problem_data, is, i, j, k, dx, dy,
+          dz * PFFaceScale(ProblemDataZmult(problem_data), is, i, j, k),
+          longitude_width, latitude_origin, latitude_width, r);
+        cell_volume = geometry.volume;
       }
 
       fp[ip] -= cell_volume * dt * (sp[ip] + et[ip]);
@@ -810,27 +787,15 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
 
       if (spherical_accumulation)
       {
-        int izmult = SubvectorEltIndex(z_mult_sub, i, j, k);
-        double thickness = dz * z_mult_dat[izmult];
-        double refinement = pow(2.0, r);
-        double delta_lambda = longitude_width / refinement;
-        double delta_phi = latitude_width / refinement;
-        double phi_south = latitude_origin + j * delta_phi;
-        double phi_north = phi_south + delta_phi;
-        double phi_center = 0.5 * (phi_south + phi_north);
-        double latitude_factor = 2.0 * cos(phi_center) * sin(0.5 * delta_phi);
-
-        /* Reference-sphere thin-layer geometry, retaining the existing TFG flux
-         * approximation. Horizontal distances are arc lengths, not 3-D chords.
-         * Reference-radius arc length times actual layer thickness.
-         * Geometry is computed once by the positive-face owner and the same
-         * integrated flow is added with opposite signs to the two residuals. */
-        distance_x = radius * cos(phi_center) * delta_lambda;
-        distance_y = radius * delta_phi;
-        /* Vertical spacing retains the actual layer thicknesses. */
-        area_right = radius * thickness * delta_phi;
-        area_front = radius * thickness * cos(phi_north) * delta_lambda;
-        area_upper = radius * radius * delta_lambda * latitude_factor;
+        PFHorizontalGeometry geometry = PFGetHorizontalGeometry(
+          problem_data, is, i, j, k, dx, dy,
+          dz * PFFaceScale(ProblemDataZmult(problem_data), is, i, j, k),
+          longitude_width, latitude_origin, latitude_width, r);
+        distance_x = geometry.dx;
+        distance_y = geometry.dy;
+        area_right = geometry.east;
+        area_front = geometry.north;
+        area_upper = geometry.horizontal;
       }
 
       double x_dir_g = NAN;
@@ -1393,14 +1358,11 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
         dir = -1;
         if (spherical_accumulation)
         {
-          int izmult = SubvectorEltIndex(z_mult_sub, i, j, k);
-          double thickness = dz * z_mult_dat[izmult];
-          double refinement = pow(2.0, r);
-          double delta_phi = latitude_width / refinement;
-          h = radius * thickness * delta_phi;
-          /* Positive faces were computed by the internal loop (including
-           * TFG, upwinding and flow barriers). Negative boundary faces had
-           * no domain cell on their outside to compute an old contribution. */
+          PFHorizontalGeometry geometry = PFGetHorizontalGeometry(
+            problem_data, is, i, j, k, dx, dy,
+            dz * PFFaceScale(ProblemDataZmult(problem_data), is, i, j, k),
+            longitude_width, latitude_origin, latitude_width, r);
+          h = geometry.west;
           u_old = 0.0;
         }
         else
@@ -1433,14 +1395,11 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
         dir = 1;
         if (spherical_accumulation)
         {
-          int izmult = SubvectorEltIndex(z_mult_sub, i, j, k);
-          double thickness = dz * z_mult_dat[izmult];
-          double refinement = pow(2.0, r);
-          double delta_phi = latitude_width / refinement;
-          h = radius * thickness * delta_phi;
-          /* Positive faces were computed by the internal loop (including
-           * TFG, upwinding and flow barriers). Negative boundary faces had
-           * no domain cell on their outside to compute an old contribution. */
+          PFHorizontalGeometry geometry = PFGetHorizontalGeometry(
+            problem_data, is, i, j, k, dx, dy,
+            dz * PFFaceScale(ProblemDataZmult(problem_data), is, i, j, k),
+            longitude_width, latitude_origin, latitude_width, r);
+          h = geometry.east;
           u_old = vel_vec[vel_idx] * h;
         }
         else
@@ -1473,16 +1432,11 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
         dir = -1;
         if (spherical_accumulation)
         {
-          int izmult = SubvectorEltIndex(z_mult_sub, i, j, k);
-          double thickness = dz * z_mult_dat[izmult];
-          double refinement = pow(2.0, r);
-          double delta_lambda = longitude_width / refinement;
-          double delta_phi = latitude_width / refinement;
-          double phi_face = latitude_origin + j * delta_phi;
-          h = radius * thickness * cos(phi_face) * delta_lambda;
-          /* Positive faces were computed by the internal loop (including
-           * TFG, upwinding and flow barriers). Negative boundary faces had
-           * no domain cell on their outside to compute an old contribution. */
+          PFHorizontalGeometry geometry = PFGetHorizontalGeometry(
+            problem_data, is, i, j, k, dx, dy,
+            dz * PFFaceScale(ProblemDataZmult(problem_data), is, i, j, k),
+            longitude_width, latitude_origin, latitude_width, r);
+          h = geometry.south;
           u_old = 0.0;
         }
         else
@@ -1515,16 +1469,11 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
         dir = 1;
         if (spherical_accumulation)
         {
-          int izmult = SubvectorEltIndex(z_mult_sub, i, j, k);
-          double thickness = dz * z_mult_dat[izmult];
-          double refinement = pow(2.0, r);
-          double delta_lambda = longitude_width / refinement;
-          double delta_phi = latitude_width / refinement;
-          double phi_face = latitude_origin + (j + 1) * delta_phi;
-          h = radius * thickness * cos(phi_face) * delta_lambda;
-          /* Positive faces were computed by the internal loop (including
-           * TFG, upwinding and flow barriers). Negative boundary faces had
-           * no domain cell on their outside to compute an old contribution. */
+          PFHorizontalGeometry geometry = PFGetHorizontalGeometry(
+            problem_data, is, i, j, k, dx, dy,
+            dz * PFFaceScale(ProblemDataZmult(problem_data), is, i, j, k),
+            longitude_width, latitude_origin, latitude_width, r);
+          h = geometry.north;
           u_old = vel_vec[vel_idx] * h;
         }
         else
@@ -1557,17 +1506,11 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
         dir = -1;
         if (spherical_accumulation)
         {
-          int izmult = SubvectorEltIndex(z_mult_sub, i, j, k);
-          double thickness = dz * z_mult_dat[izmult];
-
-          double refinement = pow(2.0, r);
-          double delta_lambda = longitude_width / refinement;
-          double delta_phi = latitude_width / refinement;
-          double phi_center = latitude_origin + (j + 0.5) * delta_phi;
-          double latitude_factor = 2.0 * cos(phi_center) * sin(0.5 * delta_phi);
-          h = radius * radius * delta_lambda * latitude_factor;
-          /* The below-domain cell is not an internal-loop center, so this
-           * negative boundary face has no old integrated flux to remove. */
+          PFHorizontalGeometry geometry = PFGetHorizontalGeometry(
+            problem_data, is, i, j, k, dx, dy,
+            dz * PFFaceScale(ProblemDataZmult(problem_data), is, i, j, k),
+            longitude_width, latitude_origin, latitude_width, r);
+          h = geometry.horizontal;
           u_old = 0.0;
         }
         else
@@ -1958,16 +1901,11 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
         h = ffz * del_x_slope * del_y_slope;
         if (spherical_accumulation)
         {
-          int izmult = SubvectorEltIndex(z_mult_sub, i, j, k);
-          double thickness = dz * z_mult_dat[izmult];
-
-          double refinement = pow(2.0, r);
-          double delta_lambda = longitude_width / refinement;
-          double delta_phi = latitude_width / refinement;
-          double phi_south = latitude_origin + j * delta_phi;
-          double phi_center = phi_south + 0.5 * delta_phi;
-          double latitude_factor = 2.0 * cos(phi_center) * sin(0.5 * delta_phi);
-          h = radius * radius * delta_lambda * latitude_factor;
+          PFHorizontalGeometry geometry = PFGetHorizontalGeometry(
+            problem_data, is, i, j, k, dx, dy,
+            dz * PFFaceScale(ProblemDataZmult(problem_data), is, i, j, k),
+            longitude_width, latitude_origin, latitude_width, r);
+          h = geometry.horizontal;
         }
         vel_vec = vz;
         vel_idx = vz_l + sz_v;

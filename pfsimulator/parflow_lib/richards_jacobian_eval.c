@@ -40,6 +40,7 @@
  */
 
 #include "parflow.h"
+#include "face_metrics.h"
 #include "seepage.h"
 #include "llnlmath.h"
 #include "llnltyps.h"
@@ -395,19 +396,17 @@ void    RichardsJacobianEval(
   /* Match NlFunctionEval geometry for storage, internal fluxes, FluxBC,
    * and the top SeepageFaceBC. Other boundary types remain Cartesian. */
   int spherical_accumulation = public_xtra->spherical_accumulation;
-  double radius = ProblemDataReferenceRadius(problem_data);
   double longitude_width = 0.0;
   double latitude_origin = 0.0;
   double latitude_width = 0.0;
   if (spherical_accumulation)
   {
     double radians_per_degree = acos(-1.0) / 180.0;
-    if (!isfinite(radius) || radius <= 0.0)
-      InputError("%s%s", "Spherical geometry requires a finite positive reference radius", "");
     longitude_width = BackgroundDX(GlobalsBackground) * radians_per_degree;
     latitude_origin = BackgroundY(GlobalsBackground) * radians_per_degree;
     latitude_width = BackgroundDY(GlobalsBackground) * radians_per_degree;
   }
+  spherical_accumulation |= problem_data->face_dx_scale != NULL;
 
   /* Save negative own-pressure derivatives of positive-face integrated flows.
    * FluxBC must cancel exactly the diagonal contribution added by the interior
@@ -478,18 +477,11 @@ void    RichardsJacobianEval(
       double vol2 = vol * z_mult_dat[ipo];
       if (spherical_accumulation)
       {
-        int izmult = SubvectorEltIndex(z_mult_sub, i, j, k);
-        double thickness = dz * z_mult_dat[izmult];
-        double refinement = pow(2.0, r);
-        double delta_lambda = longitude_width / refinement;
-        double delta_phi = latitude_width / refinement;
-        double phi_south = latitude_origin + j * delta_phi;
-        double phi_north = phi_south + delta_phi;
-        double latitude_factor = 2.0 * cos(0.5 * (phi_north + phi_south))
-                                 * sin(0.5 * delta_phi);
-        /* Geometry is static with respect to pressure: only replace volume. */
-        vol2 = thickness * radius * radius
-               * delta_lambda * latitude_factor;
+        PFHorizontalGeometry geometry = PFGetHorizontalGeometry(
+          problem_data, is, i, j, k, dx, dy,
+          dz * PFFaceScale(ProblemDataZmult(problem_data), is, i, j, k),
+          longitude_width, latitude_origin, latitude_width, r);
+        vol2 = geometry.volume;
       }
       cp[im] += (sdp[iv] * dp[iv] + sp[iv] * ddp[iv])
                 * pop[ipo] * vol2 + ss[iv] * vol2 * (sdp[iv] * dp[iv] * pp[iv] + sp[iv] * ddp[iv] * pp[iv] + sp[iv] * dp[iv]); //sk start
@@ -653,21 +645,15 @@ void    RichardsJacobianEval(
       double area_upper = ffz;
       if (spherical_accumulation)
       {
-        int izmult = SubvectorEltIndex(z_mult_sub, i, j, k);
-        double thickness = dz * z_mult_dat[izmult];
-        double refinement = pow(2.0, r);
-        double delta_lambda = longitude_width / refinement;
-        double delta_phi = latitude_width / refinement;
-        double phi_south = latitude_origin + j * delta_phi;
-        double phi_north = phi_south + delta_phi;
-        double phi_center = 0.5 * (phi_south + phi_north);
-        double latitude_factor = 2.0 * cos(phi_center) * sin(0.5 * delta_phi);
-        distance_x = radius * cos(phi_center) * delta_lambda;
-        distance_y = radius * delta_phi;
-        /* Vertical spacing retains the actual layer thicknesses. */
-        area_right = radius * thickness * delta_phi;
-        area_front = radius * thickness * cos(phi_north) * delta_lambda;
-        area_upper = radius * radius * delta_lambda * latitude_factor;
+        PFHorizontalGeometry geometry = PFGetHorizontalGeometry(
+          problem_data, is, i, j, k, dx, dy,
+          dz * PFFaceScale(ProblemDataZmult(problem_data), is, i, j, k),
+          longitude_width, latitude_origin, latitude_width, r);
+        distance_x = geometry.dx;
+        distance_y = geometry.dy;
+        area_right = geometry.east;
+        area_front = geometry.north;
+        area_upper = geometry.horizontal;
       }
 
       double prod = rpp[ip] * dp[ip];
@@ -1437,12 +1423,11 @@ void    RichardsJacobianEval(
           double top_area = vol / dz;
           if (spherical_accumulation)
           {
-            double refinement = pow(2.0, SubgridRX(subgrid));
-            double delta_lambda = longitude_width / refinement;
-            double delta_phi = latitude_width / refinement;
-            double phi_center = latitude_origin + (j + 0.5) * delta_phi;
-            top_area = radius * radius * delta_lambda
-                       * 2.0 * cos(phi_center) * sin(0.5 * delta_phi);
+            PFHorizontalGeometry geometry = PFGetHorizontalGeometry(
+              problem_data, is, i, j, k, dx, dy,
+              dz * PFFaceScale(ProblemDataZmult(problem_data), is, i, j, k),
+              longitude_width, latitude_origin, latitude_width, r);
+            top_area = geometry.horizontal;
           }
           cp[im] += top_area * dt;
         }

@@ -501,6 +501,18 @@ void          FreeProblemData(
     FreeVector(ProblemDataMannings(problem_data));   //sk
     FreeVector(ProblemDataSSlopeX(problem_data));   //RMM
     FreeVector(ProblemDataSSlopeY(problem_data));   //RMM
+    if (problem_data->face_dx_scale)
+    {
+      Grid *fg = VectorGrid(problem_data->face_dx_scale);
+      FreeVector(problem_data->face_dx_scale);
+      FreeGrid(fg);
+    }
+    if (problem_data->face_dy_scale)
+    {
+      Grid *fg = VectorGrid(problem_data->face_dy_scale);
+      FreeVector(problem_data->face_dy_scale);
+      FreeGrid(fg);
+    }
     FreeVector(ProblemDataZmult(problem_data));   //RMM
     FreeVector(ProblemDataFBx(problem_data));   //RMM
     FreeVector(ProblemDataFBy(problem_data));   //RMM

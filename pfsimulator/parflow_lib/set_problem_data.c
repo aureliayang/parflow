@@ -35,6 +35,7 @@
 *****************************************************************************/
 
 #include "parflow.h"
+#include <string.h>
 
 
 /*--------------------------------------------------------------------------
@@ -83,6 +84,132 @@ static void CheckSphericalGeometry(int invalid, const char *message)
     InputError("%s%s\n", message, "");
 }
 
+/* Read an UNDISTRIBUTED PFB on every rank, including local halos. This avoids
+ * applying cell-grid pfdist layouts to the overlapping face grids. */
+static unsigned long long FacePFBWord(FILE *file, int bytes, int *invalid)
+{
+  unsigned long long word = 0;
+  for (int b = 0; b < bytes; b++)
+  {
+    int c = fgetc(file);
+    if (c == EOF) { *invalid = 1; return 0; }
+    word = (word << 8) | (unsigned char)c;
+  }
+  return word;
+}
+
+static Vector *ReadFaceMetric(Grid *grid, char *filename, int axis)
+{
+  SubgridArray *all = NewSubgridArray();
+  int is, invalid = 0;
+  ForSubgridI(is, GridAllSubgrids(grid))
+  {
+    Subgrid *sg = DuplicateSubgrid(SubgridArraySubgrid(GridAllSubgrids(grid), is));
+    if (axis == 0) SubgridNX(sg)++;
+    else SubgridNY(sg)++;
+    AppendSubgrid(sg, all);
+  }
+  Grid *fg = NewGrid(GetGridSubgrids(all), all);
+  Vector *v = NewVectorType(fg, 1, 2, vector_cell_centered);
+  InitVectorAll(v, NAN);
+  FILE *file = fopen(filename, "rb");
+  CheckSphericalGeometry(file == NULL, "Cannot open face metric PFB (use a shared, undistributed file)");
+  for (int b = 0; b < 3; b++) FacePFBWord(file, 8, &invalid);
+  int dims[3];
+  for (int b = 0; b < 3; b++) dims[b] = (int)FacePFBWord(file, 4, &invalid);
+  int expected[3] = {BackgroundNX(GlobalsBackground) + (axis == 0),
+                     BackgroundNY(GlobalsBackground) + (axis == 1),
+                     BackgroundNZ(GlobalsBackground)};
+  for (int b = 0; b < 3; b++)
+  {
+    invalid |= dims[b] != expected[b];
+    FacePFBWord(file, 8, &invalid);
+  }
+  int blocks = (int)FacePFBWord(file, 4, &invalid);
+  invalid |= blocks <= 0;
+  CheckSphericalGeometry(invalid, "Face metric PFB has an invalid header or dimensions");
+  for (int b = 0; b < blocks; b++)
+  {
+    int origin[3], size[3];
+    for (int d = 0; d < 3; d++) origin[d] = (int)FacePFBWord(file, 4, &invalid);
+    for (int d = 0; d < 3; d++) size[d] = (int)FacePFBWord(file, 4, &invalid);
+    for (int d = 0; d < 3; d++)
+    {
+      int refinement = (int)FacePFBWord(file, 4, &invalid);
+      invalid |= origin[d] < 0 || size[d] <= 0 || size[d] > dims[d]
+                 || origin[d] > dims[d] - size[d] || refinement != 0;
+    }
+    CheckSphericalGeometry(invalid, "Face metric PFB contains an invalid or refined subgrid");
+    for (int k = origin[2]; k < origin[2] + size[2]; k++)
+      for (int j = origin[1]; j < origin[1] + size[1]; j++)
+        for (int i = origin[0]; i < origin[0] + size[0]; i++)
+        {
+          unsigned long long bits = FacePFBWord(file, 8, &invalid);
+          double value;
+          memcpy(&value, &bits, sizeof(value));
+          invalid |= !isfinite(value) || value <= 0.0;
+          ForSubgridI(is, GridSubgrids(fg))
+          {
+            Subvector *s = VectorSubvector(v, is);
+            if (i >= SubvectorIX(s) && i < SubvectorIX(s) + SubvectorNX(s)
+                && j >= SubvectorIY(s) && j < SubvectorIY(s) + SubvectorNY(s)
+                && k >= SubvectorIZ(s) && k < SubvectorIZ(s) + SubvectorNZ(s))
+              SubvectorData(s)[SubvectorEltIndex(s, i, j, k)] = value;
+          }
+        }
+  }
+  invalid |= fgetc(file) != EOF;
+  fclose(file);
+  CheckSphericalGeometry(invalid, "Face metric PFB is truncated, has trailing data, or nonpositive/nonfinite scales");
+  /* Fill physical exterior halos by constant extension. Inter-rank halos were
+   * read directly from the same global file, including edge/corner values. */
+  ForSubgridI(is, GridSubgrids(fg))
+  {
+    Subvector *s = VectorSubvector(v, is);
+    for (int k = SubvectorIZ(s); k < SubvectorIZ(s) + SubvectorNZ(s); k++)
+      for (int j = SubvectorIY(s); j < SubvectorIY(s) + SubvectorNY(s); j++)
+        for (int i = SubvectorIX(s); i < SubvectorIX(s) + SubvectorNX(s); i++)
+        {
+          int ci = pfmin(pfmax(i, 0), dims[0] - 1);
+          int cj = pfmin(pfmax(j, 0), dims[1] - 1);
+          int ck = pfmin(pfmax(k, 0), dims[2] - 1);
+          double val = SubvectorData(s)[SubvectorEltIndex(s, ci, cj, ck)];
+          SubvectorData(s)[SubvectorEltIndex(s, i, j, k)] = val;
+          invalid |= !isfinite(val) || val <= 0.0;
+        }
+  }
+  CheckSphericalGeometry(invalid, "Face metric PFB does not cover the local grid and halo");
+  return v;
+}
+
+static void PrepareFaceMetrics(ProblemData *pd)
+{
+  NameArray names = NA_NewNameArray("False True");
+  char *key = "Solver.FaceMetrics.Enabled";
+  int enabled = NA_NameToIndexExitOnError(names, GetStringDefault(key, "False"), key);
+  NA_FreeNameArray(names);
+  if (!enabled) return;
+  names = NA_NewNameArray("False True");
+  key = "Solver.Experimental.SphericalAccumulation";
+  int spherical = NA_NameToIndexExitOnError(names, GetStringDefault(key, "False"), key);
+  NA_FreeNameArray(names);
+  CheckSphericalGeometry(spherical, "FaceMetrics and SphericalAccumulation are mutually exclusive");
+  Background *bg = GlobalsBackground;
+  int invalid = BackgroundIX(bg) != 0 || BackgroundIY(bg) != 0 || BackgroundIZ(bg) != 0
+                || !isfinite(BackgroundDX(bg)) || BackgroundDX(bg) <= 0.0
+                || !isfinite(BackgroundDY(bg)) || BackgroundDY(bg) <= 0.0;
+  Grid *grid = VectorGrid(ProblemDataZmult(pd));
+  int is;
+  ForSubgridI(is, GridSubgrids(grid))
+  {
+    Subgrid *sg = GridSubgrid(grid, is);
+    invalid |= SubgridRX(sg) || SubgridRY(sg) || SubgridRZ(sg);
+  }
+  CheckSphericalGeometry(invalid, "FaceMetrics requires a zero-origin unrefined index grid and positive finite meter spacing");
+  pd->face_dx_scale = ReadFaceMetric(grid, GetString("Solver.FaceMetrics.DXScale.FileName"), 1);
+  pd->face_dy_scale = ReadFaceMetric(grid, GetString("Solver.FaceMetrics.DYScale.FileName"), 0);
+}
+
 /* Validate reference-sphere geometry and prepare actual layer-thickness halos. */
 static void PrepareSphericalGeometry(ProblemData *problem_data)
 {
@@ -95,30 +222,38 @@ static void PrepareSphericalGeometry(ProblemData *problem_data)
   NA_FreeNameArray(spherical_na);
   int is, i, j, k;
   int invalid = 0;
-  if (!enabled)
+  if (!enabled && !problem_data->face_dx_scale)
     return;
 
-  double reference_radius = GetDouble("Solver.SphericalGeometry.ReferenceRadius");
-  CheckSphericalGeometry(!isfinite(reference_radius) || reference_radius <= 0.0,
+  double reference_radius = 0.0;
+  if (enabled)
+  {
+    reference_radius = GetDouble("Solver.SphericalGeometry.ReferenceRadius");
+    CheckSphericalGeometry(!isfinite(reference_radius) || reference_radius <= 0.0,
                          "Solver.SphericalGeometry.ReferenceRadius must be finite and positive (meters)");
+  }
   double dx = BackgroundDX(bg);
   double dy = BackgroundDY(bg);
   int ilo = BackgroundIX(bg), ihi = ilo + BackgroundNX(bg) - 1;
   int jlo = BackgroundIY(bg), jhi = jlo + BackgroundNY(bg) - 1;
   int klo = BackgroundIZ(bg), khi = klo + BackgroundNZ(bg) - 1;
-  double south = BackgroundY(bg) + jlo * dy;
-  double north = BackgroundY(bg) + (jhi + 1) * dy;
-  invalid = !isfinite(dx) || !isfinite(dy) || dx <= 0.0 || dy <= 0.0
-            || !isfinite(south) || !isfinite(north) || south <= -90.0 || north >= 90.0
-            || dx * BackgroundNX(bg) > 360.0;
-  ForSubgridI(is, GridSubgrids(grid))
+  if (enabled)
   {
-    Subgrid *sg = GridSubgrid(grid, is);
-    invalid |= SubgridRX(sg) != 0 || SubgridRY(sg) != 0 || SubgridRZ(sg) != 0;
+    double south = BackgroundY(bg) + jlo * dy;
+    double north = BackgroundY(bg) + (jhi + 1) * dy;
+    invalid = !isfinite(dx) || !isfinite(dy) || dx <= 0.0 || dy <= 0.0
+              || !isfinite(south) || !isfinite(north) || south <= -90.0 || north >= 90.0
+              || dx * BackgroundNX(bg) > 360.0;
+    ForSubgridI(is, GridSubgrids(grid))
+    {
+      Subgrid *sg = GridSubgrid(grid, is);
+      invalid |= SubgridRX(sg) != 0 || SubgridRY(sg) != 0 || SubgridRZ(sg) != 0;
+    }
+    CheckSphericalGeometry(invalid,
+                           "Spherical geometry requires an unrefined grid, positive angular spacing in degrees, "
+                           "longitude span <= 360 degrees and latitude boundaries strictly between -90 and 90 degrees");
+
   }
-  CheckSphericalGeometry(invalid,
-                         "Spherical geometry requires an unrefined grid, positive angular spacing in degrees, "
-                         "longitude span <= 360 degrees and latitude boundaries strictly between -90 and 90 degrees");
 
   Vector *thickness = NewVectorType(grid, 1, 3, vector_cell_centered);
   InitVectorAll(thickness, NAN);
@@ -253,6 +388,7 @@ void          SetProblemData(
                         ProblemDataZmult(problem_data)));
 
     /* Prepare reference-sphere geometry only after actual layer thicknesses. */
+    PrepareFaceMetrics(problem_data);
     PrepareSphericalGeometry(problem_data);
 
 

@@ -181,6 +181,8 @@ typedef struct {
   Vector *dz_mult;
   /* Fixed reference sphere radius [m]; set once when spherical geometry is enabled. */
   double reference_radius;
+  Vector *face_dx_scale; /* DX on north/south faces (y-face grid). */
+  Vector *face_dy_scale; /* DY on east/west faces (x-face grid). */
   Vector *rsz;
 } ProblemData;
 

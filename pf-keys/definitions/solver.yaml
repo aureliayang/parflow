@@ -58,6 +58,33 @@ Solver:
         DoubleValue:
           min_value: 0.0
 
+  FaceMetrics:
+    __doc__: 'Experimental meter-background horizontal face-scale PFB inputs'
+    Enabled:
+      help: >
+        Enable static horizontal face metrics. Background X/Y/Z and DX/DY/DZ
+        remain meters. Mutually exclusive with SphericalAccumulation.
+        Scoped to underground flow with FluxConst and top SeepageFace boundaries.
+      default: False
+      domains:
+        BoolDomain:
+    DXScale:
+      __doc__: 'East-west edge length scale on north/south faces'
+      FileName:
+        help: >
+          Undistributed PFB of positive dimensionless DX scales; dimensions
+          NX by NY+1 by NZ. Read once, including local halos, on every rank.
+        domains:
+          AnyString:
+    DYScale:
+      __doc__: 'North-south edge length scale on east/west faces'
+      FileName:
+        help: >
+          Undistributed PFB of positive dimensionless DY scales; dimensions
+          NX+1 by NY by NZ. Do not pfdist either face-scale file.
+        domains:
+          AnyString:
+
   AbsTol:
     help: >
       [Type: double] This value gives the absolute tolerance for the linear solve algorithm.
