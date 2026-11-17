@@ -110,6 +110,8 @@ static Vector *ReadFaceMetric(Grid *grid, char *filename, int axis)
     AppendSubgrid(sg, all);
   }
   Grid *fg = NewGrid(GetGridSubgrids(all), all);
+  /* NewVectorType constructs communication packages even for read-only fields. */
+  CreateComputePkgs(fg);
   Vector *v = NewVectorType(fg, 1, 2, vector_cell_centered);
   InitVectorAll(v, NAN);
   FILE *file = fopen(filename, "rb");

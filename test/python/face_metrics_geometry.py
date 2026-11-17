@@ -19,7 +19,7 @@ SHIMS = r'''
 #include <assert.h>
 typedef struct { int ix,iy,iz,nx,ny,nz; } Subgrid;
 typedef struct { Subgrid *items[16]; int size; } SubgridArray;
-typedef struct { SubgridArray *local,*all; } Grid;
+typedef struct { SubgridArray *local,*all; int compute_ready; } Grid;
 typedef struct { Subgrid box; double *data; } Subvector;
 typedef struct { Grid *grid; Subvector *s[16]; } Vector;
 typedef struct { int nx,ny,nz; } Background;
@@ -50,9 +50,10 @@ SubgridArray *NewSubgridArray(void){return calloc(1,sizeof(SubgridArray));}
 Subgrid *DuplicateSubgrid(Subgrid *s){Subgrid *r=malloc(sizeof(*r));*r=*s;return r;}
 void AppendSubgrid(Subgrid *s,SubgridArray *a){a->items[a->size++]=s;}
 SubgridArray *GetGridSubgrids(SubgridArray *a){return a;}
-Grid *NewGrid(SubgridArray *l,SubgridArray *a){Grid *g=malloc(sizeof(*g));g->local=l;g->all=a;return g;}
+Grid *NewGrid(SubgridArray *l,SubgridArray *a){Grid *g=malloc(sizeof(*g));g->local=l;g->all=a;g->compute_ready=0;return g;}
+void CreateComputePkgs(Grid *g){g->compute_ready=1;}
 Vector *NewVectorType(Grid *g,int nc,int halo,int type){
- (void)nc;(void)type;Vector *v=calloc(1,sizeof(*v));v->grid=g;
+ (void)nc;(void)type;assert(g->compute_ready);Vector *v=calloc(1,sizeof(*v));v->grid=g;
  for(int i=0;i<g->local->size;i++){
  Subvector *s=v->s[i]=calloc(1,sizeof(*s));s->box=*g->local->items[i];
  s->box.ix-=halo;s->box.iy-=halo;s->box.iz-=halo;
