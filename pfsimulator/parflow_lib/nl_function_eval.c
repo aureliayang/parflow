@@ -989,9 +989,10 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
   /*  Calculate correction for boundary conditions */
   ForSubgridI(is, GridSubgrids(grid))
   {
-    /* Geometry pointers are prepared once for this subgrid. All eight cache
-     * vectors have the same grid, ghost width and element layout. */
+    /* The geometry arrays share one cell-centered layout. */
     Subvector *face_geom_sub = NULL;
+    const double *face_dx_data = NULL;
+    const double *face_dy_data = NULL;
     const double *face_east_data = NULL;
     const double *face_horizontal_data = NULL;
     const double *face_north_data = NULL;
@@ -1000,6 +1001,8 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
     if (problem_data->face_geom_dx)
     {
       face_geom_sub = VectorSubvector(problem_data->face_geom_dx, is);
+      face_dx_data = SubvectorData(VectorSubvector(problem_data->face_geom_dx, is));
+      face_dy_data = SubvectorData(VectorSubvector(problem_data->face_geom_dy, is));
       face_east_data = SubvectorData(VectorSubvector(problem_data->face_geom_east, is));
       face_horizontal_data = SubvectorData(VectorSubvector(problem_data->face_geom_horizontal, is));
       face_north_data = SubvectorData(VectorSubvector(problem_data->face_geom_north, is));
@@ -1385,7 +1388,8 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
       ForPatchCellsPerFace(FluxBC,
                            BeforeAllCells(DoNothing),
                            LoopVars(i, j, k, ival, bc_struct, ipatch, is),
-                           Locals(int dir, ip;
+                           Locals(int dir, ip, fm_idx;
+                                  PFHorizontalGeometry boundary_geometry;
                                   int vel_idx, vx_l, vy_l, vz_l;
                                   double *vel_vec;
                                   double diff, u_new, u_old, h;
@@ -1396,6 +1400,14 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
       {
         dir = 0;
         ip = SubvectorEltIndex(p_sub, i, j, k);
+        fm_idx = face_geom_sub ? SubvectorEltIndex(face_geom_sub, i, j, k) : 0;
+        if (spherical_accumulation && !face_geom_sub)
+        {
+          boundary_geometry = PFGetHorizontalGeometry(
+            problem_data, is, i, j, k, dx, dy,
+            dz * PFFaceScale(ProblemDataZmult(problem_data), is, i, j, k),
+            longitude_width, latitude_origin, latitude_width, r);
+        }
 
         vel_idx = 0;
         vx_l = SubvectorEltIndex(vx_sub, i, j, k);
@@ -1421,233 +1433,133 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
       }),
                            FACE(LeftFace,
       {
-        h = ffx * z_mult_dat[ip] * del_y_slope;
+        h = (face_geom_sub ? face_west_data[fm_idx] : (spherical_accumulation ? boundary_geometry.west : ffx * z_mult_dat[ip] * del_y_slope));
         vel_vec = vx;
         vel_idx = vx_l;
 
         dir = -1;
-        int fm_idx = face_geom_sub ? SubvectorEltIndex(face_geom_sub, i, j, k) : 0;
-        if (spherical_accumulation)
-        {
-          if (face_geom_sub)
-          {
-            h = face_west_data[fm_idx];
-          }
-          else
-          {
-            PFHorizontalGeometry geometry = PFGetHorizontalGeometry(
-              problem_data, is, i, j, k, dx, dy,
-              dz * PFFaceScale(ProblemDataZmult(problem_data), is, i, j, k),
-              longitude_width, latitude_origin, latitude_width, r);
-            h = geometry.west;
-          }
-          u_old = 0.0;
-        }
-        else
-        {
-          diff = pp[ip - 1] - pp[ip];
-          u_old = h
-                  * PMean(pp[ip - 1], pp[ip],
-                          permxp[ip - 1], permxp[ip])
-                  * (diff / dx * del_x_slope)
-                  * RPMean(pp[ip - 1], pp[ip],
-                           rpp[ip - 1] * dp[ip - 1], rpp[ip] * dp[ip])
-                  / viscosity;
+        diff = pp[ip - 1] - pp[ip];
+        u_old = h
+                * PMean(pp[ip - 1], pp[ip],
+                        permxp[ip - 1], permxp[ip])
+                * (diff / (face_geom_sub ? face_dx_data[fm_idx] : (spherical_accumulation ? boundary_geometry.dx : dx)) * del_x_slope)
+                * RPMean(pp[ip - 1], pp[ip],
+                         rpp[ip - 1] * dp[ip - 1], rpp[ip] * dp[ip])
+                / viscosity;
 
-          u_old += h
-                   * PMean(pp[ip - 1], pp[ip],
-                           permxp[ip - 1], permxp[ip])
-                   * (-x_dir_g)
-                   * RPMean(pp[ip - 1], pp[ip], rpp[ip - 1] * dp[ip - 1],
-                            rpp[ip] * dp[ip])
-                   / viscosity;
-        }
+        u_old += h
+                 * PMean(pp[ip - 1], pp[ip],
+                         permxp[ip - 1], permxp[ip])
+                 * (-x_dir_g)
+                 * RPMean(pp[ip - 1], pp[ip], rpp[ip - 1] * dp[ip - 1],
+                          rpp[ip] * dp[ip])
+                 / viscosity;
         u_new = h;
       }),
                            FACE(RightFace,
       {
-        h = ffx * z_mult_dat[ip] * del_y_slope;
+        h = (face_geom_sub ? face_east_data[fm_idx] : (spherical_accumulation ? boundary_geometry.east : ffx * z_mult_dat[ip] * del_y_slope));
         vel_vec = vx;
         vel_idx = vx_l + 1;
 
         dir = 1;
-        int fm_idx = face_geom_sub ? SubvectorEltIndex(face_geom_sub, i, j, k) : 0;
-        if (spherical_accumulation)
-        {
-          if (face_geom_sub)
-          {
-            h = face_east_data[fm_idx];
-          }
-          else
-          {
-            PFHorizontalGeometry geometry = PFGetHorizontalGeometry(
-              problem_data, is, i, j, k, dx, dy,
-              dz * PFFaceScale(ProblemDataZmult(problem_data), is, i, j, k),
-              longitude_width, latitude_origin, latitude_width, r);
-            h = geometry.east;
-          }
-          u_old = vel_vec[vel_idx] * h;
-        }
-        else
-        {
-          diff = pp[ip] - pp[ip + 1];
-          u_old = h
-                  * PMean(pp[ip], pp[ip + 1],
-                          permxp[ip], permxp[ip + 1])
-                  * (diff / dx * del_x_slope)
-                  * RPMean(pp[ip], pp[ip + 1],
-                           rpp[ip] * dp[ip], rpp[ip + 1] * dp[ip + 1])
-                  / viscosity;
+        diff = pp[ip] - pp[ip + 1];
+        u_old = h
+                * PMean(pp[ip], pp[ip + 1],
+                        permxp[ip], permxp[ip + 1])
+                * (diff / (face_geom_sub ? face_dx_data[fm_idx] : (spherical_accumulation ? boundary_geometry.dx : dx)) * del_x_slope)
+                * RPMean(pp[ip], pp[ip + 1],
+                         rpp[ip] * dp[ip], rpp[ip + 1] * dp[ip + 1])
+                / viscosity;
 
-          u_old += h
-                   * PMean(pp[ip], pp[ip + 1],
-                           permxp[ip], permxp[ip + 1])
-                   * (-x_dir_g)
-                   * RPMean(pp[ip], pp[ip + 1], rpp[ip] * dp[ip],
-                            rpp[ip + 1] * dp[ip + 1])
-                   / viscosity;
-        }
+        u_old += h
+                 * PMean(pp[ip], pp[ip + 1],
+                         permxp[ip], permxp[ip + 1])
+                 * (-x_dir_g)
+                 * RPMean(pp[ip], pp[ip + 1], rpp[ip] * dp[ip],
+                          rpp[ip + 1] * dp[ip + 1])
+                 / viscosity;
         u_new = h;
       }),
                            FACE(DownFace,
       {
-        h = ffy * z_mult_dat[ip] * del_x_slope;
+        h = (face_geom_sub ? face_south_data[fm_idx] : (spherical_accumulation ? boundary_geometry.south : ffy * z_mult_dat[ip] * del_x_slope));
         vel_vec = vy;
         vel_idx = vy_l;
 
         dir = -1;
-        int fm_idx = face_geom_sub ? SubvectorEltIndex(face_geom_sub, i, j, k) : 0;
-        if (spherical_accumulation)
-        {
-          if (face_geom_sub)
-          {
-            h = face_south_data[fm_idx];
-          }
-          else
-          {
-            PFHorizontalGeometry geometry = PFGetHorizontalGeometry(
-              problem_data, is, i, j, k, dx, dy,
-              dz * PFFaceScale(ProblemDataZmult(problem_data), is, i, j, k),
-              longitude_width, latitude_origin, latitude_width, r);
-            h = geometry.south;
-          }
-          u_old = 0.0;
-        }
-        else
-        {
-          diff = pp[ip - sy_p] - pp[ip];
-          u_old = h
-                  * PMean(pp[ip - sy_p], pp[ip],
-                          permyp[ip - sy_p], permyp[ip])
-                  * (diff / dy)
-                  * RPMean(pp[ip - sy_p], pp[ip],
-                           rpp[ip - sy_p] * dp[ip - sy_p], rpp[ip] * dp[ip])
-                  / viscosity;
+        diff = pp[ip - sy_p] - pp[ip];
+        u_old = h
+                * PMean(pp[ip - sy_p], pp[ip],
+                        permyp[ip - sy_p], permyp[ip])
+                * (diff / (face_geom_sub ? face_dy_data[fm_idx] : (spherical_accumulation ? boundary_geometry.dy : dy)))
+                * RPMean(pp[ip - sy_p], pp[ip],
+                         rpp[ip - sy_p] * dp[ip - sy_p], rpp[ip] * dp[ip])
+                / viscosity;
 
-          u_old += h *
-                   PMean(pp[ip], pp[ip - sy_p], permyp[ip],
-                         permyp[ip - sy_p])
-                   * (-y_dir_g)
-                   * RPMean(pp[ip], pp[ip - sy_p], rpp[ip] * dp[ip],
-                            rpp[ip - sy_p] * dp[ip - sy_p])
-                   / viscosity;
-        }
+        u_old += h *
+                 PMean(pp[ip], pp[ip - sy_p], permyp[ip],
+                       permyp[ip - sy_p])
+                 * (-y_dir_g)
+                 * RPMean(pp[ip], pp[ip - sy_p], rpp[ip] * dp[ip],
+                          rpp[ip - sy_p] * dp[ip - sy_p])
+                 / viscosity;
         u_new = h;
       }),
                            FACE(UpFace,
       {
-        h = ffy * z_mult_dat[ip] * del_x_slope;
+        h = (face_geom_sub ? face_north_data[fm_idx] : (spherical_accumulation ? boundary_geometry.north : ffy * z_mult_dat[ip] * del_x_slope));
         vel_vec = vy;
         vel_idx = vy_l + sy_v;
 
         dir = 1;
-        int fm_idx = face_geom_sub ? SubvectorEltIndex(face_geom_sub, i, j, k) : 0;
-        if (spherical_accumulation)
-        {
-          if (face_geom_sub)
-          {
-            h = face_north_data[fm_idx];
-          }
-          else
-          {
-            PFHorizontalGeometry geometry = PFGetHorizontalGeometry(
-              problem_data, is, i, j, k, dx, dy,
-              dz * PFFaceScale(ProblemDataZmult(problem_data), is, i, j, k),
-              longitude_width, latitude_origin, latitude_width, r);
-            h = geometry.north;
-          }
-          u_old = vel_vec[vel_idx] * h;
-        }
-        else
-        {
-          diff = pp[ip] - pp[ip + sy_p];
-          u_old = h
-                  * PMean(pp[ip], pp[ip + sy_p],
-                          permyp[ip], permyp[ip + sy_p])
-                  * (diff / dy)
-                  * RPMean(pp[ip], pp[ip + sy_p],
-                           rpp[ip] * dp[ip], rpp[ip + sy_p] * dp[ip + sy_p])
-                  / viscosity;
+        diff = pp[ip] - pp[ip + sy_p];
+        u_old = h
+                * PMean(pp[ip], pp[ip + sy_p],
+                        permyp[ip], permyp[ip + sy_p])
+                * (diff / (face_geom_sub ? face_dy_data[fm_idx] : (spherical_accumulation ? boundary_geometry.dy : dy)))
+                * RPMean(pp[ip], pp[ip + sy_p],
+                         rpp[ip] * dp[ip], rpp[ip + sy_p] * dp[ip + sy_p])
+                / viscosity;
 
-          u_old += h
-                   * PMean(pp[ip], pp[ip + sy_p], permyp[ip],
-                           permyp[ip + sy_p])
-                   * (-y_dir_g)
-                   * RPMean(pp[ip], pp[ip + sy_p], rpp[ip] * dp[ip],
-                            rpp[ip + sy_p] * dp[ip + sy_p])
-                   / viscosity;
-        }
+        u_old += h
+                 * PMean(pp[ip], pp[ip + sy_p], permyp[ip],
+                         permyp[ip + sy_p])
+                 * (-y_dir_g)
+                 * RPMean(pp[ip], pp[ip + sy_p], rpp[ip] * dp[ip],
+                          rpp[ip + sy_p] * dp[ip + sy_p])
+                 / viscosity;
         u_new = h;
       }),
                            FACE(BackFace,
       {
-        h = ffz * del_x_slope * del_y_slope;
+        h = (face_geom_sub ? face_horizontal_data[fm_idx] : (spherical_accumulation ? boundary_geometry.horizontal : ffz * del_x_slope * del_y_slope));
         vel_vec = vz;
         vel_idx = vz_l;
 
         dir = -1;
-        int fm_idx = face_geom_sub ? SubvectorEltIndex(face_geom_sub, i, j, k) : 0;
-        if (spherical_accumulation)
-        {
-          if (face_geom_sub)
-          {
-            h = face_horizontal_data[fm_idx];
-          }
-          else
-          {
-            PFHorizontalGeometry geometry = PFGetHorizontalGeometry(
-              problem_data, is, i, j, k, dx, dy,
-              dz * PFFaceScale(ProblemDataZmult(problem_data), is, i, j, k),
-              longitude_width, latitude_origin, latitude_width, r);
-            h = geometry.horizontal;
-          }
-          u_old = 0.0;
-        }
-        else
-        {
-          sep = dz * Mean(z_mult_dat[ip], z_mult_dat[ip - sz_p]);                      //RMM
+        sep = dz * Mean(z_mult_dat[ip], z_mult_dat[ip - sz_p]);                      //RMM
 
-          lower_cond = (pp[ip - sz_p] / sep)
-                       - (z_mult_dat[ip - sz_p] / (z_mult_dat[ip] + z_mult_dat[ip - sz_p])) * dp[ip - sz_p] * gravity *
-                       z_dir_g;
+        lower_cond = (pp[ip - sz_p] / sep)
+                     - (z_mult_dat[ip - sz_p] / (z_mult_dat[ip] + z_mult_dat[ip - sz_p])) * dp[ip - sz_p] * gravity *
+                     z_dir_g;
 
-          upper_cond = (pp[ip] / sep) + (z_mult_dat[ip] / (z_mult_dat[ip] + z_mult_dat[ip - sz_p])) * dp[ip] * gravity *
-                       z_dir_g;
+        upper_cond = (pp[ip] / sep) + (z_mult_dat[ip] / (z_mult_dat[ip] + z_mult_dat[ip - sz_p])) * dp[ip] * gravity *
+                     z_dir_g;
 
-          diff = lower_cond - upper_cond;
-          u_old = h
-                  * PMeanDZ(permzp[ip - sz_p], permzp[ip],
-                            z_mult_dat[ip - sz_p], z_mult_dat[ip])
-                  * diff
-                  * RPMean(lower_cond, upper_cond,
-                           rpp[ip - sz_p] * dp[ip - sz_p], rpp[ip] * dp[ip])
-                  / viscosity;
-        }
+        diff = lower_cond - upper_cond;
+        u_old = h
+                * PMeanDZ(permzp[ip - sz_p], permzp[ip],
+                          z_mult_dat[ip - sz_p], z_mult_dat[ip])
+                * diff
+                * RPMean(lower_cond, upper_cond,
+                         rpp[ip - sz_p] * dp[ip - sz_p], rpp[ip] * dp[ip])
+                / viscosity;
         u_new = h;
       }),
                            FACE(FrontFace,
       {
-        h = ffz * del_x_slope * del_y_slope;
+        h = (face_geom_sub ? face_horizontal_data[fm_idx] : (spherical_accumulation ? boundary_geometry.horizontal : ffz * del_x_slope * del_y_slope));
         vel_vec = vz;
         vel_idx = vz_l + sz_v;
 

@@ -101,3 +101,19 @@ each subgrid loop. Each cell computes one index using the geometry subvector
 cached arrays directly. There is no static pointer cache, per-cell subgrid-key
 check or intermediate geometry struct on the FaceMetrics path. The original
 reference-sphere calculation remains available when FaceMetrics is disabled.
+
+### Original-algorithm compatibility
+
+FaceMetrics retains the original Cartesian vertical density-derivative formulas,
+symmetric boundary preparation and FluxBC residual/Jacobian correction algebra.
+Only their distances, face areas and volumes use the geometry arrays. In
+particular, FluxBC again applies `cp += op; op = 0`, and there are no temporary
+`flux_diag_x/y/z` vectors or alternative vertical-derivative formulas. This
+retains the original Jacobian approximations rather than introducing separate
+derivative fixes as part of the geometry feature.
+
+An extracted-code comparison against the original master (`7958b8af`) passed
+35,000 all-one checks for internal flux/Jacobian terms, all six residual FluxBC
+faces and all six symmetric boundary faces, including variable density and
+layer thickness. This is algebra-level validation, not proof of identical MPI
+solver trajectories; a complete all-one/control run is still required.
