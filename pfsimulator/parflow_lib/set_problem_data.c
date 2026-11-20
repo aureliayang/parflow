@@ -35,6 +35,7 @@
 *****************************************************************************/
 
 #include "parflow.h"
+#include "face_metrics.h"
 #include <string.h>
 
 
@@ -314,9 +315,82 @@ static void PrepareSphericalGeometry(ProblemData *problem_data)
   ProblemDataReferenceRadius(problem_data) = reference_radius;
 }
 
+/* Build the static derived geometry used by FaceMetrics.  The source face
+ * scale fields and the dz multiplier are immutable after initialization in
+ * this path, so all arithmetic below can be removed from NL residual/Jacobian
+ * evaluations. */
+static void PrepareFaceGeometryCache(ProblemData *pd)
+{
+  if (!pd->face_dx_scale || pd->face_geom_dx) return;
+
+  Grid *grid = VectorGrid(ProblemDataZmult(pd));
+  pd->face_geom_dx = NewVectorType(grid, 1, 3, vector_cell_centered);
+  pd->face_geom_dy = NewVectorType(grid, 1, 3, vector_cell_centered);
+  pd->face_geom_west = NewVectorType(grid, 1, 3, vector_cell_centered);
+  pd->face_geom_east = NewVectorType(grid, 1, 3, vector_cell_centered);
+  pd->face_geom_south = NewVectorType(grid, 1, 3, vector_cell_centered);
+  pd->face_geom_north = NewVectorType(grid, 1, 3, vector_cell_centered);
+  pd->face_geom_horizontal = NewVectorType(grid, 1, 3, vector_cell_centered);
+  pd->face_geom_volume = NewVectorType(grid, 1, 3, vector_cell_centered);
+  Vector *cache[] = {pd->face_geom_dx, pd->face_geom_dy,
+                     pd->face_geom_west, pd->face_geom_east,
+                     pd->face_geom_south, pd->face_geom_north,
+                     pd->face_geom_horizontal, pd->face_geom_volume};
+  for (int n = 0; n < 8; n++) InitVectorAll(cache[n], NAN);
+
+  int invalid = 0, is, i, j, k;
+  ForSubgridI(is, GridSubgrids(grid))
+  {
+    Subgrid *sg = GridSubgrid(grid, is);
+    Subvector *zs = VectorSubvector(ProblemDataZmult(pd), is);
+    Subvector *out[8];
+    for (int n = 0; n < 8; n++) out[n] = VectorSubvector(cache[n], is);
+    double *zd = SubvectorData(zs);
+    double *od[8];
+    for (int n = 0; n < 8; n++) od[n] = SubvectorData(out[n]);
+    double dx = SubgridDX(sg), dy = SubgridDY(sg), dz = SubgridDZ(sg);
+    for (k = SubgridIZ(sg); k < SubgridIZ(sg) + SubgridNZ(sg); k++)
+      for (j = SubgridIY(sg); j < SubgridIY(sg) + SubgridNY(sg); j++)
+        for (i = SubgridIX(sg); i < SubgridIX(sg) + SubgridNX(sg); i++)
+        {
+          int ic = SubvectorEltIndex(out[0], i, j, k);
+          double thickness = dz * zd[SubvectorEltIndex(zs, i, j, k)];
+          double xs = PFFaceScale(pd->face_dx_scale, is, i, j, k);
+          double xn = PFFaceScale(pd->face_dx_scale, is, i, j + 1, k);
+          double yw = PFFaceScale(pd->face_dy_scale, is, i, j, k);
+          double ye = PFFaceScale(pd->face_dy_scale, is, i + 1, j, k);
+          double gx = dx * 0.5 * (xs + xn);
+          double gy = dy * 0.5 * (yw + ye);
+          double horizontal = gx * gy;
+          double volume = horizontal * thickness;
+          od[0][ic] = gx;
+          od[1][ic] = gy;
+          od[2][ic] = dy * yw * thickness;
+          od[3][ic] = dy * ye * thickness;
+          od[4][ic] = dx * xs * thickness;
+          od[5][ic] = dx * xn * thickness;
+          od[6][ic] = horizontal;
+          od[7][ic] = volume;
+          invalid |= !isfinite(thickness) || thickness <= 0.0
+                     || !isfinite(gx) || !isfinite(gy)
+                     || !isfinite(volume) || volume <= 0.0;
+        }
+  }
+  CheckSphericalGeometry(invalid, "FaceMetrics derived geometry cache construction failed");
+
+  /* Exchange one-cell halos so boundary and neighboring subgrid accesses see
+   * the same cached geometry as the original face-scale implementation. */
+  for (int n = 0; n < 8; n++)
+  {
+    VectorUpdateCommHandle *handle = InitVectorUpdate(cache[n], VectorUpdateGodunov);
+    FinalizeVectorUpdate(handle);
+  }
+}
+
 /*--------------------------------------------------------------------------
  * SetProblemData
- *--------------------------------------------------------------------------*/
+ *--------------------------------------------------------------------------
+*/
 
 void          SetProblemData(
                              ProblemData *problem_data)
@@ -395,6 +469,7 @@ void          SetProblemData(
     /* Prepare reference-sphere geometry only after actual layer thicknesses. */
     PrepareFaceMetrics(problem_data);
     PrepareSphericalGeometry(problem_data);
+    PrepareFaceGeometryCache(problem_data);
 
 
     PFModuleInvokeType(realSpaceZInvoke, real_space_z,

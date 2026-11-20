@@ -513,6 +513,19 @@ void          FreeProblemData(
       FreeVector(problem_data->face_dy_scale);
       FreeGrid(fg);
     }
+    if (problem_data->face_geom_dx)
+    {
+      Grid *cg = VectorGrid(problem_data->face_geom_dx);
+      FreeVector(problem_data->face_geom_dx);
+      FreeVector(problem_data->face_geom_dy);
+      FreeVector(problem_data->face_geom_west);
+      FreeVector(problem_data->face_geom_east);
+      FreeVector(problem_data->face_geom_south);
+      FreeVector(problem_data->face_geom_north);
+      FreeVector(problem_data->face_geom_horizontal);
+      FreeVector(problem_data->face_geom_volume);
+      /* The cache vectors borrow the z_mult Grid; it is owned by z_mult. */
+    }
     FreeVector(ProblemDataZmult(problem_data));   //RMM
     FreeVector(ProblemDataFBx(problem_data));   //RMM
     FreeVector(ProblemDataFBy(problem_data));   //RMM

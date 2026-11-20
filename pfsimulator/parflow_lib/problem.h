@@ -183,6 +183,15 @@ typedef struct {
   double reference_radius;
   Vector *face_dx_scale; /* DX on north/south faces (y-face grid). */
   Vector *face_dy_scale; /* DY on east/west faces (x-face grid). */
+  /* Derived FaceMetrics geometry, built once after face scales and dz are ready. */
+  Vector *face_geom_dx;
+  Vector *face_geom_dy;
+  Vector *face_geom_west;
+  Vector *face_geom_east;
+  Vector *face_geom_south;
+  Vector *face_geom_north;
+  Vector *face_geom_horizontal;
+  Vector *face_geom_volume;
   Vector *rsz;
 } ProblemData;
 

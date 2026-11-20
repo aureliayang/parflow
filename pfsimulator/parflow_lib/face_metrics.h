@@ -18,6 +18,20 @@ static inline PFHorizontalGeometry PFGetHorizontalGeometry(
   double dphi, int refinement)
 {
   PFHorizontalGeometry g;
+  if (pd->face_geom_dx)
+  {
+    /* FaceMetrics geometry is static for a run: read the values prepared at
+     * initialization instead of recomputing face averages and areas here. */
+    g.dx = PFFaceScale(pd->face_geom_dx, is, i, j, k);
+    g.dy = PFFaceScale(pd->face_geom_dy, is, i, j, k);
+    g.west = PFFaceScale(pd->face_geom_west, is, i, j, k);
+    g.east = PFFaceScale(pd->face_geom_east, is, i, j, k);
+    g.south = PFFaceScale(pd->face_geom_south, is, i, j, k);
+    g.north = PFFaceScale(pd->face_geom_north, is, i, j, k);
+    g.horizontal = PFFaceScale(pd->face_geom_horizontal, is, i, j, k);
+    g.volume = PFFaceScale(pd->face_geom_volume, is, i, j, k);
+    return g;
+  }
   if (pd->face_dx_scale)
   {
     double xs = PFFaceScale(pd->face_dx_scale, is, i, j, k);
