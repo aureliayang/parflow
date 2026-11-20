@@ -6,6 +6,14 @@ typedef struct {
   double dx, dy, west, east, south, north, horizontal, volume;
 } PFHorizontalGeometry;
 
+typedef struct {
+  Vector *key;
+  int is;
+  Subvector *sub[8];
+  double *data[8];
+} PFFaceMetricAccessCache;
+static PFFaceMetricAccessCache pf_face_metric_cache = {0};
+
 static inline double PFFaceScale(Vector *v, int is, int i, int j, int k)
 {
   Subvector *s = VectorSubvector(v, is);
@@ -22,14 +30,36 @@ static inline PFHorizontalGeometry PFGetHorizontalGeometry(
   {
     /* FaceMetrics geometry is static for a run: read the values prepared at
      * initialization instead of recomputing face averages and areas here. */
-    g.dx = PFFaceScale(pd->face_geom_dx, is, i, j, k);
-    g.dy = PFFaceScale(pd->face_geom_dy, is, i, j, k);
-    g.west = PFFaceScale(pd->face_geom_west, is, i, j, k);
-    g.east = PFFaceScale(pd->face_geom_east, is, i, j, k);
-    g.south = PFFaceScale(pd->face_geom_south, is, i, j, k);
-    g.north = PFFaceScale(pd->face_geom_north, is, i, j, k);
-    g.horizontal = PFFaceScale(pd->face_geom_horizontal, is, i, j, k);
-    g.volume = PFFaceScale(pd->face_geom_volume, is, i, j, k);
+    if (pf_face_metric_cache.key != pd->face_geom_dx || pf_face_metric_cache.is != is)
+    {
+      pf_face_metric_cache.key = pd->face_geom_dx;
+      pf_face_metric_cache.is = is;
+      pf_face_metric_cache.sub[0] = VectorSubvector(pd->face_geom_dx, is);
+      pf_face_metric_cache.sub[1] = VectorSubvector(pd->face_geom_dy, is);
+      pf_face_metric_cache.sub[2] = VectorSubvector(pd->face_geom_west, is);
+      pf_face_metric_cache.sub[3] = VectorSubvector(pd->face_geom_east, is);
+      pf_face_metric_cache.sub[4] = VectorSubvector(pd->face_geom_south, is);
+      pf_face_metric_cache.sub[5] = VectorSubvector(pd->face_geom_north, is);
+      pf_face_metric_cache.sub[6] = VectorSubvector(pd->face_geom_horizontal, is);
+      pf_face_metric_cache.sub[7] = VectorSubvector(pd->face_geom_volume, is);
+      pf_face_metric_cache.data[0] = SubvectorData(pf_face_metric_cache.sub[0]);
+      pf_face_metric_cache.data[1] = SubvectorData(pf_face_metric_cache.sub[1]);
+      pf_face_metric_cache.data[2] = SubvectorData(pf_face_metric_cache.sub[2]);
+      pf_face_metric_cache.data[3] = SubvectorData(pf_face_metric_cache.sub[3]);
+      pf_face_metric_cache.data[4] = SubvectorData(pf_face_metric_cache.sub[4]);
+      pf_face_metric_cache.data[5] = SubvectorData(pf_face_metric_cache.sub[5]);
+      pf_face_metric_cache.data[6] = SubvectorData(pf_face_metric_cache.sub[6]);
+      pf_face_metric_cache.data[7] = SubvectorData(pf_face_metric_cache.sub[7]);
+    }
+    int fm_idx = SubvectorEltIndex(pf_face_metric_cache.sub[0], i, j, k);
+    g.dx = pf_face_metric_cache.data[0][fm_idx];
+    g.dy = pf_face_metric_cache.data[1][fm_idx];
+    g.west = pf_face_metric_cache.data[2][fm_idx];
+    g.east = pf_face_metric_cache.data[3][fm_idx];
+    g.south = pf_face_metric_cache.data[4][fm_idx];
+    g.north = pf_face_metric_cache.data[5][fm_idx];
+    g.horizontal = pf_face_metric_cache.data[6][fm_idx];
+    g.volume = pf_face_metric_cache.data[7][fm_idx];
     return g;
   }
   if (pd->face_dx_scale)
