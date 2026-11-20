@@ -351,6 +351,16 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
 
   ForSubgridI(is, GridSubgrids(grid))
   {
+    /* Geometry pointers are prepared once for this subgrid. All eight cache
+     * vectors have the same grid, ghost width and element layout. */
+    Subvector *face_geom_sub = NULL;
+    const double *face_volume_data = NULL;
+    if (problem_data->face_geom_dx)
+    {
+      face_geom_sub = VectorSubvector(problem_data->face_geom_dx, is);
+      face_volume_data = SubvectorData(VectorSubvector(problem_data->face_geom_volume, is));
+    }
+
     subgrid = GridSubgrid(grid, is);
 
     d_sub = VectorSubvector(density, is);
@@ -425,7 +435,8 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
 
       /* Default to the original Cartesian volume; override geometry only. */
       double cell_volume = vol * del_x_slope * del_y_slope * z_mult_dat[ip];
-      if (spherical_accumulation)
+      int fm_idx = face_geom_sub ? SubvectorEltIndex(face_geom_sub, i, j, k) : 0;
+      if (spherical_accumulation && !face_geom_sub)
       {
         PFHorizontalGeometry geometry = PFGetHorizontalGeometry(
           problem_data, is, i, j, k, dx, dy,
@@ -434,7 +445,7 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
         cell_volume = geometry.volume;
       }
 
-      fp[ip] = (sp[ip] * dp[ip] - osp[ip] * odp[ip]) * pop[ipo] * cell_volume;
+      fp[ip] = (sp[ip] * dp[ip] - osp[ip] * odp[ip]) * pop[ipo] * (face_geom_sub ? face_volume_data[fm_idx] : cell_volume);
     });
   }
 
@@ -442,6 +453,16 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
 
   ForSubgridI(is, GridSubgrids(grid))
   {
+    /* Geometry pointers are prepared once for this subgrid. All eight cache
+     * vectors have the same grid, ghost width and element layout. */
+    Subvector *face_geom_sub = NULL;
+    const double *face_volume_data = NULL;
+    if (problem_data->face_geom_dx)
+    {
+      face_geom_sub = VectorSubvector(problem_data->face_geom_dx, is);
+      face_volume_data = SubvectorData(VectorSubvector(problem_data->face_geom_volume, is));
+    }
+
     subgrid = GridSubgrid(grid, is);
 
     ss_sub = VectorSubvector(sstorage, is);
@@ -503,7 +524,8 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
 
       /* Default to the original Cartesian volume; override geometry only. */
       double cell_volume = vol * del_x_slope * del_y_slope * z_mult_dat[ip];
-      if (spherical_accumulation)
+      int fm_idx = face_geom_sub ? SubvectorEltIndex(face_geom_sub, i, j, k) : 0;
+      if (spherical_accumulation && !face_geom_sub)
       {
         PFHorizontalGeometry geometry = PFGetHorizontalGeometry(
           problem_data, is, i, j, k, dx, dy,
@@ -512,7 +534,7 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
         cell_volume = geometry.volume;
       }
 
-      fp[ip] += ss[ip] * cell_volume
+      fp[ip] += ss[ip] * (face_geom_sub ? face_volume_data[fm_idx] : cell_volume)
                 * (pp[ip] * sp[ip] * dp[ip] - opp[ip] * osp[ip] * odp[ip]);
     });
   }
@@ -525,6 +547,16 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
 
   ForSubgridI(is, GridSubgrids(grid))
   {
+    /* Geometry pointers are prepared once for this subgrid. All eight cache
+     * vectors have the same grid, ghost width and element layout. */
+    Subvector *face_geom_sub = NULL;
+    const double *face_volume_data = NULL;
+    if (problem_data->face_geom_dx)
+    {
+      face_geom_sub = VectorSubvector(problem_data->face_geom_dx, is);
+      face_volume_data = SubvectorData(VectorSubvector(problem_data->face_geom_volume, is));
+    }
+
     subgrid = GridSubgrid(grid, is);
 
     s_sub = VectorSubvector(source, is);
@@ -583,7 +615,8 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
 
       /* Default to the original Cartesian volume; override geometry only. */
       double cell_volume = vol * del_x_slope * del_y_slope * z_mult_dat[ip];
-      if (spherical_accumulation)
+      int fm_idx = face_geom_sub ? SubvectorEltIndex(face_geom_sub, i, j, k) : 0;
+      if (spherical_accumulation && !face_geom_sub)
       {
         PFHorizontalGeometry geometry = PFGetHorizontalGeometry(
           problem_data, is, i, j, k, dx, dy,
@@ -592,7 +625,7 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
         cell_volume = geometry.volume;
       }
 
-      fp[ip] -= cell_volume * dt * (sp[ip] + et[ip]);
+      fp[ip] -= (face_geom_sub ? face_volume_data[fm_idx] : cell_volume) * dt * (sp[ip] + et[ip]);
     });
   }
 
@@ -676,6 +709,24 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
   /* Calculate contributions from second order derivatives and gravity */
   ForSubgridI(is, GridSubgrids(grid))
   {
+    /* Geometry pointers are prepared once for this subgrid. All eight cache
+     * vectors have the same grid, ghost width and element layout. */
+    Subvector *face_geom_sub = NULL;
+    const double *face_dx_data = NULL;
+    const double *face_dy_data = NULL;
+    const double *face_east_data = NULL;
+    const double *face_horizontal_data = NULL;
+    const double *face_north_data = NULL;
+    if (problem_data->face_geom_dx)
+    {
+      face_geom_sub = VectorSubvector(problem_data->face_geom_dx, is);
+      face_dx_data = SubvectorData(VectorSubvector(problem_data->face_geom_dx, is));
+      face_dy_data = SubvectorData(VectorSubvector(problem_data->face_geom_dy, is));
+      face_east_data = SubvectorData(VectorSubvector(problem_data->face_geom_east, is));
+      face_horizontal_data = SubvectorData(VectorSubvector(problem_data->face_geom_horizontal, is));
+      face_north_data = SubvectorData(VectorSubvector(problem_data->face_geom_north, is));
+    }
+
     subgrid = GridSubgrid(grid, is);
 
     /* Thickness ghosts must be populated just like pressure ghosts.
@@ -785,7 +836,8 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
       double area_front = ffy * z_mult_dat[ip] * del_x_slope;
       double area_upper = ffz * del_x_slope * del_y_slope;
 
-      if (spherical_accumulation)
+      int fm_idx = face_geom_sub ? SubvectorEltIndex(face_geom_sub, i, j, k) : 0;
+      if (spherical_accumulation && !face_geom_sub)
       {
         PFHorizontalGeometry geometry = PFGetHorizontalGeometry(
           problem_data, is, i, j, k, dx, dy,
@@ -842,11 +894,11 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
        * diff_l >= 0 implies flow goes left to right */
 
       double diff_l = pp[ip] - pp[ip + 1];
-      double updir = (diff_l / distance_x) * x_dir_g_c - x_dir_g;
+      double updir = (diff_l / (face_geom_sub ? face_dx_data[fm_idx] : distance_x)) * x_dir_g_c - x_dir_g;
 
-      double u_right = area_right * PMean(pp[ip], pp[ip + 1],
+      double u_right = (face_geom_sub ? face_east_data[fm_idx] : area_right) * PMean(pp[ip], pp[ip + 1],
                                            permxp[ip], permxp[ip + 1])
-                       * (diff_l / (distance_x * del_x_slope)) * x_dir_g_c
+                       * (diff_l / ((face_geom_sub ? face_dx_data[fm_idx] : distance_x) * del_x_slope)) * x_dir_g_c
                        * RPMean(updir, 0.0,
                                 rpp[ip] * dp[ip],
                                 rpp[ip + 1] * dp[ip + 1])
@@ -857,7 +909,7 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
        * upwind on pressure is currently implemented
        * Sx < 0 implies flow goes left to right */
 
-      u_right += area_right * PMean(pp[ip], pp[ip + 1],
+      u_right += (face_geom_sub ? face_east_data[fm_idx] : area_right) * PMean(pp[ip], pp[ip + 1],
                                    permxp[ip], permxp[ip + 1])
                  * (-x_dir_g)
                  * RPMean(updir, 0.0, rpp[ip] * dp[ip],
@@ -868,11 +920,11 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
       /* Calculate front face velocity.
        * diff_l >= 0 implies flow goes back to front */
       diff_l = pp[ip] - pp[ip + sy_p];
-      updir = (diff_l / distance_y) * y_dir_g_c - y_dir_g;
+      updir = (diff_l / (face_geom_sub ? face_dy_data[fm_idx] : distance_y)) * y_dir_g_c - y_dir_g;
 
-      double u_front = area_front
+      double u_front = (face_geom_sub ? face_north_data[fm_idx] : area_front)
                        * PMean(pp[ip], pp[ip + sy_p], permyp[ip], permyp[ip + sy_p])
-                       * (diff_l / (distance_y * del_y_slope)) * y_dir_g_c
+                       * (diff_l / ((face_geom_sub ? face_dy_data[fm_idx] : distance_y) * del_y_slope)) * y_dir_g_c
                        * RPMean(updir, 0.0,
                                 rpp[ip] * dp[ip],
                                 rpp[ip + sy_p] * dp[ip + sy_p])
@@ -884,7 +936,7 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
        * Sy < 0 implies flow goes from left to right
        */
 
-      u_front += area_front
+      u_front += (face_geom_sub ? face_north_data[fm_idx] : area_front)
                  * PMean(pp[ip], pp[ip + sy_p], permyp[ip], permyp[ip + sy_p])
                  * (-y_dir_g)
                  * RPMean(updir, 0.0, rpp[ip] * dp[ip],
@@ -908,7 +960,7 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
 
       diff_l = (lower_cond_l - upper_cond_l);
 
-      double u_upper = area_upper
+      double u_upper = (face_geom_sub ? face_horizontal_data[fm_idx] : area_upper)
                        * PMeanDZ(permzp[ip], permzp[ip + sz_p], z_mult_dat[ip], z_mult_dat[ip + sz_p])
                        * diff_l
                        * RPMean(lower_cond_l, upper_cond_l, rpp[ip] * dp[ip],
@@ -923,9 +975,9 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
       u_upper = u_upper * FBz_dat[ip];
 
       /* velocity data jjb */
-      vx[vxi] = u_right / area_right;
-      vy[vyi] = u_front / area_front;
-      vz[vzi] = u_upper / area_upper;
+      vx[vxi] = u_right / (face_geom_sub ? face_east_data[fm_idx] : area_right);
+      vy[vyi] = u_front / (face_geom_sub ? face_north_data[fm_idx] : area_front);
+      vz[vzi] = u_upper / (face_geom_sub ? face_horizontal_data[fm_idx] : area_upper);
 
       PlusEquals(fp[ip], dt * (u_right + u_front + u_upper));
       PlusEquals(fp[ip + 1], -dt * u_right);
@@ -937,6 +989,24 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
   /*  Calculate correction for boundary conditions */
   ForSubgridI(is, GridSubgrids(grid))
   {
+    /* Geometry pointers are prepared once for this subgrid. All eight cache
+     * vectors have the same grid, ghost width and element layout. */
+    Subvector *face_geom_sub = NULL;
+    const double *face_east_data = NULL;
+    const double *face_horizontal_data = NULL;
+    const double *face_north_data = NULL;
+    const double *face_south_data = NULL;
+    const double *face_west_data = NULL;
+    if (problem_data->face_geom_dx)
+    {
+      face_geom_sub = VectorSubvector(problem_data->face_geom_dx, is);
+      face_east_data = SubvectorData(VectorSubvector(problem_data->face_geom_east, is));
+      face_horizontal_data = SubvectorData(VectorSubvector(problem_data->face_geom_horizontal, is));
+      face_north_data = SubvectorData(VectorSubvector(problem_data->face_geom_north, is));
+      face_south_data = SubvectorData(VectorSubvector(problem_data->face_geom_south, is));
+      face_west_data = SubvectorData(VectorSubvector(problem_data->face_geom_west, is));
+    }
+
     subgrid = GridSubgrid(grid, is);
 
     d_sub = VectorSubvector(density, is);
@@ -1356,13 +1426,21 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
         vel_idx = vx_l;
 
         dir = -1;
+        int fm_idx = face_geom_sub ? SubvectorEltIndex(face_geom_sub, i, j, k) : 0;
         if (spherical_accumulation)
         {
-          PFHorizontalGeometry geometry = PFGetHorizontalGeometry(
-            problem_data, is, i, j, k, dx, dy,
-            dz * PFFaceScale(ProblemDataZmult(problem_data), is, i, j, k),
-            longitude_width, latitude_origin, latitude_width, r);
-          h = geometry.west;
+          if (face_geom_sub)
+          {
+            h = face_west_data[fm_idx];
+          }
+          else
+          {
+            PFHorizontalGeometry geometry = PFGetHorizontalGeometry(
+              problem_data, is, i, j, k, dx, dy,
+              dz * PFFaceScale(ProblemDataZmult(problem_data), is, i, j, k),
+              longitude_width, latitude_origin, latitude_width, r);
+            h = geometry.west;
+          }
           u_old = 0.0;
         }
         else
@@ -1393,13 +1471,21 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
         vel_idx = vx_l + 1;
 
         dir = 1;
+        int fm_idx = face_geom_sub ? SubvectorEltIndex(face_geom_sub, i, j, k) : 0;
         if (spherical_accumulation)
         {
-          PFHorizontalGeometry geometry = PFGetHorizontalGeometry(
-            problem_data, is, i, j, k, dx, dy,
-            dz * PFFaceScale(ProblemDataZmult(problem_data), is, i, j, k),
-            longitude_width, latitude_origin, latitude_width, r);
-          h = geometry.east;
+          if (face_geom_sub)
+          {
+            h = face_east_data[fm_idx];
+          }
+          else
+          {
+            PFHorizontalGeometry geometry = PFGetHorizontalGeometry(
+              problem_data, is, i, j, k, dx, dy,
+              dz * PFFaceScale(ProblemDataZmult(problem_data), is, i, j, k),
+              longitude_width, latitude_origin, latitude_width, r);
+            h = geometry.east;
+          }
           u_old = vel_vec[vel_idx] * h;
         }
         else
@@ -1430,13 +1516,21 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
         vel_idx = vy_l;
 
         dir = -1;
+        int fm_idx = face_geom_sub ? SubvectorEltIndex(face_geom_sub, i, j, k) : 0;
         if (spherical_accumulation)
         {
-          PFHorizontalGeometry geometry = PFGetHorizontalGeometry(
-            problem_data, is, i, j, k, dx, dy,
-            dz * PFFaceScale(ProblemDataZmult(problem_data), is, i, j, k),
-            longitude_width, latitude_origin, latitude_width, r);
-          h = geometry.south;
+          if (face_geom_sub)
+          {
+            h = face_south_data[fm_idx];
+          }
+          else
+          {
+            PFHorizontalGeometry geometry = PFGetHorizontalGeometry(
+              problem_data, is, i, j, k, dx, dy,
+              dz * PFFaceScale(ProblemDataZmult(problem_data), is, i, j, k),
+              longitude_width, latitude_origin, latitude_width, r);
+            h = geometry.south;
+          }
           u_old = 0.0;
         }
         else
@@ -1467,13 +1561,21 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
         vel_idx = vy_l + sy_v;
 
         dir = 1;
+        int fm_idx = face_geom_sub ? SubvectorEltIndex(face_geom_sub, i, j, k) : 0;
         if (spherical_accumulation)
         {
-          PFHorizontalGeometry geometry = PFGetHorizontalGeometry(
-            problem_data, is, i, j, k, dx, dy,
-            dz * PFFaceScale(ProblemDataZmult(problem_data), is, i, j, k),
-            longitude_width, latitude_origin, latitude_width, r);
-          h = geometry.north;
+          if (face_geom_sub)
+          {
+            h = face_north_data[fm_idx];
+          }
+          else
+          {
+            PFHorizontalGeometry geometry = PFGetHorizontalGeometry(
+              problem_data, is, i, j, k, dx, dy,
+              dz * PFFaceScale(ProblemDataZmult(problem_data), is, i, j, k),
+              longitude_width, latitude_origin, latitude_width, r);
+            h = geometry.north;
+          }
           u_old = vel_vec[vel_idx] * h;
         }
         else
@@ -1504,13 +1606,21 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
         vel_idx = vz_l;
 
         dir = -1;
+        int fm_idx = face_geom_sub ? SubvectorEltIndex(face_geom_sub, i, j, k) : 0;
         if (spherical_accumulation)
         {
-          PFHorizontalGeometry geometry = PFGetHorizontalGeometry(
-            problem_data, is, i, j, k, dx, dy,
-            dz * PFFaceScale(ProblemDataZmult(problem_data), is, i, j, k),
-            longitude_width, latitude_origin, latitude_width, r);
-          h = geometry.horizontal;
+          if (face_geom_sub)
+          {
+            h = face_horizontal_data[fm_idx];
+          }
+          else
+          {
+            PFHorizontalGeometry geometry = PFGetHorizontalGeometry(
+              problem_data, is, i, j, k, dx, dy,
+              dz * PFFaceScale(ProblemDataZmult(problem_data), is, i, j, k),
+              longitude_width, latitude_origin, latitude_width, r);
+            h = geometry.horizontal;
+          }
           u_old = 0.0;
         }
         else
@@ -1899,13 +2009,21 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
                            FACE(FrontFace, {
         /* h denotes face area here, not pressure head. */
         h = ffz * del_x_slope * del_y_slope;
+        int fm_idx = face_geom_sub ? SubvectorEltIndex(face_geom_sub, i, j, k) : 0;
         if (spherical_accumulation)
         {
-          PFHorizontalGeometry geometry = PFGetHorizontalGeometry(
-            problem_data, is, i, j, k, dx, dy,
-            dz * PFFaceScale(ProblemDataZmult(problem_data), is, i, j, k),
-            longitude_width, latitude_origin, latitude_width, r);
-          h = geometry.horizontal;
+          if (face_geom_sub)
+          {
+            h = face_horizontal_data[fm_idx];
+          }
+          else
+          {
+            PFHorizontalGeometry geometry = PFGetHorizontalGeometry(
+              problem_data, is, i, j, k, dx, dy,
+              dz * PFFaceScale(ProblemDataZmult(problem_data), is, i, j, k),
+              longitude_width, latitude_origin, latitude_width, r);
+            h = geometry.horizontal;
+          }
         }
         vel_vec = vz;
         vel_idx = vz_l + sz_v;

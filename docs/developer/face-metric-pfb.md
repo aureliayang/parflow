@@ -90,3 +90,14 @@ and nonuniform fields, multiple subgrids, partition halos, physical halos,
 invalid values/dimensions, and the legacy spherical formula. This is not an MPI
 end-to-end solver convergence test. A full ParFlow build/run remains required on
 a machine with the normal dependencies.
+
+### Cached geometry access
+
+Initialization stores the two horizontal distances, four side areas, horizontal
+area and cell volume in eight cell-centered vectors with identical layouts.
+Residual and Jacobian assembly acquire the needed data pointers at the start of
+each subgrid loop. Each cell computes one index using the geometry subvector
+(not the pressure index, whose ghost layout may differ), and formulas read the
+cached arrays directly. There is no static pointer cache, per-cell subgrid-key
+check or intermediate geometry struct on the FaceMetrics path. The original
+reference-sphere calculation remains available when FaceMetrics is disabled.
