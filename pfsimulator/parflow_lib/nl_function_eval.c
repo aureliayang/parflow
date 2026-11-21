@@ -27,7 +27,6 @@
 **********************************************************************EHEADER*/
 
 #include "parflow.h"
-#include "face_metrics.h"
 #include "seepage.h"
 #include "llnlmath.h"
 #include "llnltyps.h"
@@ -42,7 +41,6 @@ typedef struct {
   int time_index;
   double SpinupDampP1;      // NBE
   double SpinupDampP2;      // NBE
-  int spherical_accumulation; /* Experimental spherical residual geometry. */
   int tfgupwind;           //@RMM added for TFG formulation switch
   SeepageLookup seepage;
 } PublicXtra;
@@ -202,7 +200,6 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
   PFModule    *overlandflow_module_diff = (instance_xtra->overlandflow_module_diff);
   PFModule    *overlandflow_module_kin = (instance_xtra->overlandflow_module_kin);
 
-
   /* Reuse saturation vector to save memory */
   Vector      *rel_perm = saturation;
   Vector      *source = saturation;
@@ -329,23 +326,7 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
   PFModuleInvokeType(SaturationInvoke, saturation_module, (saturation, pressure, density,
                                                            gravity, problem_data, CALCFCN));
 
-
-  /* Experimental geometry hook: storage/source volumes and internal face fluxes are converted.
-   * This is NOT yet a complete spherical-coordinate flow solver.
-   * Background X/Y and DX/DY are longitude/latitude in degrees when enabled.
-   * Horizontal geometry uses one reference radius; vertical layer thickness is unchanged. */
-  int spherical_accumulation = public_xtra->spherical_accumulation;
-  double radians_per_degree = acos(-1.0) / 180.0;
-  double longitude_width = 0.0;
-  double latitude_origin = 0.0;
-  double latitude_width = 0.0;
-  if (spherical_accumulation)
-  {
-    longitude_width = BackgroundDX(GlobalsBackground) * radians_per_degree;
-    latitude_origin = BackgroundY(GlobalsBackground) * radians_per_degree;
-    latitude_width = BackgroundDY(GlobalsBackground) * radians_per_degree;
-  }
-  spherical_accumulation |= problem_data->face_dx_scale != NULL;
+  /* FaceMetrics geometry was prepared once during initialization. */
 
   /* Calculate accumulation terms for the function values */
 
@@ -436,14 +417,6 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
       /* Default to the original Cartesian volume; override geometry only. */
       double cell_volume = vol * del_x_slope * del_y_slope * z_mult_dat[ip];
       int fm_idx = face_geom_sub ? SubvectorEltIndex(face_geom_sub, i, j, k) : 0;
-      if (spherical_accumulation && !face_geom_sub)
-      {
-        PFHorizontalGeometry geometry = PFGetHorizontalGeometry(
-          problem_data, is, i, j, k, dx, dy,
-          dz * PFFaceScale(ProblemDataZmult(problem_data), is, i, j, k),
-          longitude_width, latitude_origin, latitude_width, r);
-        cell_volume = geometry.volume;
-      }
 
       fp[ip] = (sp[ip] * dp[ip] - osp[ip] * odp[ip]) * pop[ipo] * (face_geom_sub ? face_volume_data[fm_idx] : cell_volume);
     });
@@ -525,14 +498,6 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
       /* Default to the original Cartesian volume; override geometry only. */
       double cell_volume = vol * del_x_slope * del_y_slope * z_mult_dat[ip];
       int fm_idx = face_geom_sub ? SubvectorEltIndex(face_geom_sub, i, j, k) : 0;
-      if (spherical_accumulation && !face_geom_sub)
-      {
-        PFHorizontalGeometry geometry = PFGetHorizontalGeometry(
-          problem_data, is, i, j, k, dx, dy,
-          dz * PFFaceScale(ProblemDataZmult(problem_data), is, i, j, k),
-          longitude_width, latitude_origin, latitude_width, r);
-        cell_volume = geometry.volume;
-      }
 
       fp[ip] += ss[ip] * (face_geom_sub ? face_volume_data[fm_idx] : cell_volume)
                 * (pp[ip] * sp[ip] * dp[ip] - opp[ip] * osp[ip] * odp[ip]);
@@ -616,14 +581,6 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
       /* Default to the original Cartesian volume; override geometry only. */
       double cell_volume = vol * del_x_slope * del_y_slope * z_mult_dat[ip];
       int fm_idx = face_geom_sub ? SubvectorEltIndex(face_geom_sub, i, j, k) : 0;
-      if (spherical_accumulation && !face_geom_sub)
-      {
-        PFHorizontalGeometry geometry = PFGetHorizontalGeometry(
-          problem_data, is, i, j, k, dx, dy,
-          dz * PFFaceScale(ProblemDataZmult(problem_data), is, i, j, k),
-          longitude_width, latitude_origin, latitude_width, r);
-        cell_volume = geometry.volume;
-      }
 
       fp[ip] -= (face_geom_sub ? face_volume_data[fm_idx] : cell_volume) * dt * (sp[ip] + et[ip]);
     });
@@ -704,7 +661,6 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
   PFModuleInvokeType(PhaseRelPermInvoke, rel_perm_module,
                      (rel_perm, pressure, density, gravity, problem_data,
                       CALCFCN));
-
 
   /* Calculate contributions from second order derivatives and gravity */
   ForSubgridI(is, GridSubgrids(grid))
@@ -837,18 +793,6 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
       double area_upper = ffz * del_x_slope * del_y_slope;
 
       int fm_idx = face_geom_sub ? SubvectorEltIndex(face_geom_sub, i, j, k) : 0;
-      if (spherical_accumulation && !face_geom_sub)
-      {
-        PFHorizontalGeometry geometry = PFGetHorizontalGeometry(
-          problem_data, is, i, j, k, dx, dy,
-          dz * PFFaceScale(ProblemDataZmult(problem_data), is, i, j, k),
-          longitude_width, latitude_origin, latitude_width, r);
-        distance_x = geometry.dx;
-        distance_y = geometry.dy;
-        area_right = geometry.east;
-        area_front = geometry.north;
-        area_upper = geometry.horizontal;
-      }
 
       double x_dir_g = NAN;
       double x_dir_g_c = NAN;
@@ -916,7 +860,6 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
                           rpp[ip + 1] * dp[ip + 1])
                  / viscosity;
 
-
       /* Calculate front face velocity.
        * diff_l >= 0 implies flow goes back to front */
       diff_l = pp[ip] - pp[ip + sy_p];
@@ -948,7 +891,6 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
        */
       double sep_l = distance_z;
 
-
       double lower_cond_l = pp[ip] / sep_l
                             - (z_mult_dat[ip] / (z_mult_dat[ip] + z_mult_dat[ip + sz_p]))
                             * dp[ip] * gravity * z_dir_g;
@@ -956,7 +898,6 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
       double upper_cond_l = pp[ip + sz_p] / sep_l
                             + (z_mult_dat[ip + sz_p] / (z_mult_dat[ip] + z_mult_dat[ip + sz_p]))
                             * dp[ip + sz_p] * gravity * z_dir_g;
-
 
       diff_l = (lower_cond_l - upper_cond_l);
 
@@ -1253,7 +1194,6 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
                           rpp[ip - sy_p] * dp[ip - sy_p])
                  / viscosity;
 
-
         diff = value - pp[ip];
         u_new = RPMean(value, pp[ip],
                        rpp[ip - sy_p] * dp[ip - sy_p], rpp[ip] * dp[ip]);
@@ -1283,7 +1223,6 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
                  * RPMean(pp[ip], pp[ip + sy_p], rpp[ip] * dp[ip],
                           rpp[ip + sy_p] * dp[ip + sy_p])
                  / viscosity;
-
 
         diff = pp[ip] - value;
         u_new = RPMean(pp[ip], value,
@@ -1351,7 +1290,6 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
 
         diff = (lower_cond - upper_cond);
 
-
         u_old = h
                 * PMeanDZ(permzp[ip], permzp[ip + sz_p],
                           z_mult_dat[ip], z_mult_dat[ip + sz_p])
@@ -1389,7 +1327,6 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
                            BeforeAllCells(DoNothing),
                            LoopVars(i, j, k, ival, bc_struct, ipatch, is),
                            Locals(int dir, ip, fm_idx;
-                                  PFHorizontalGeometry boundary_geometry;
                                   int vel_idx, vx_l, vy_l, vz_l;
                                   double *vel_vec;
                                   double diff, u_new, u_old, h;
@@ -1401,13 +1338,6 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
         dir = 0;
         ip = SubvectorEltIndex(p_sub, i, j, k);
         fm_idx = face_geom_sub ? SubvectorEltIndex(face_geom_sub, i, j, k) : 0;
-        if (spherical_accumulation && !face_geom_sub)
-        {
-          boundary_geometry = PFGetHorizontalGeometry(
-            problem_data, is, i, j, k, dx, dy,
-            dz * PFFaceScale(ProblemDataZmult(problem_data), is, i, j, k),
-            longitude_width, latitude_origin, latitude_width, r);
-        }
 
         vel_idx = 0;
         vx_l = SubvectorEltIndex(vx_sub, i, j, k);
@@ -1433,7 +1363,7 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
       }),
                            FACE(LeftFace,
       {
-        h = (face_geom_sub ? face_west_data[fm_idx] : (spherical_accumulation ? boundary_geometry.west : ffx * z_mult_dat[ip] * del_y_slope));
+        h = (face_geom_sub ? face_west_data[fm_idx] : ffx * z_mult_dat[ip] * del_y_slope);
         vel_vec = vx;
         vel_idx = vx_l;
 
@@ -1442,7 +1372,7 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
         u_old = h
                 * PMean(pp[ip - 1], pp[ip],
                         permxp[ip - 1], permxp[ip])
-                * (diff / (face_geom_sub ? face_dx_data[fm_idx] : (spherical_accumulation ? boundary_geometry.dx : dx)) * del_x_slope)
+                * (diff / (face_geom_sub ? face_dx_data[fm_idx] : dx) * del_x_slope)
                 * RPMean(pp[ip - 1], pp[ip],
                          rpp[ip - 1] * dp[ip - 1], rpp[ip] * dp[ip])
                 / viscosity;
@@ -1458,7 +1388,7 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
       }),
                            FACE(RightFace,
       {
-        h = (face_geom_sub ? face_east_data[fm_idx] : (spherical_accumulation ? boundary_geometry.east : ffx * z_mult_dat[ip] * del_y_slope));
+        h = (face_geom_sub ? face_east_data[fm_idx] : ffx * z_mult_dat[ip] * del_y_slope);
         vel_vec = vx;
         vel_idx = vx_l + 1;
 
@@ -1467,7 +1397,7 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
         u_old = h
                 * PMean(pp[ip], pp[ip + 1],
                         permxp[ip], permxp[ip + 1])
-                * (diff / (face_geom_sub ? face_dx_data[fm_idx] : (spherical_accumulation ? boundary_geometry.dx : dx)) * del_x_slope)
+                * (diff / (face_geom_sub ? face_dx_data[fm_idx] : dx) * del_x_slope)
                 * RPMean(pp[ip], pp[ip + 1],
                          rpp[ip] * dp[ip], rpp[ip + 1] * dp[ip + 1])
                 / viscosity;
@@ -1483,7 +1413,7 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
       }),
                            FACE(DownFace,
       {
-        h = (face_geom_sub ? face_south_data[fm_idx] : (spherical_accumulation ? boundary_geometry.south : ffy * z_mult_dat[ip] * del_x_slope));
+        h = (face_geom_sub ? face_south_data[fm_idx] : ffy * z_mult_dat[ip] * del_x_slope);
         vel_vec = vy;
         vel_idx = vy_l;
 
@@ -1492,7 +1422,7 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
         u_old = h
                 * PMean(pp[ip - sy_p], pp[ip],
                         permyp[ip - sy_p], permyp[ip])
-                * (diff / (face_geom_sub ? face_dy_data[fm_idx] : (spherical_accumulation ? boundary_geometry.dy : dy)))
+                * (diff / (face_geom_sub ? face_dy_data[fm_idx] : dy))
                 * RPMean(pp[ip - sy_p], pp[ip],
                          rpp[ip - sy_p] * dp[ip - sy_p], rpp[ip] * dp[ip])
                 / viscosity;
@@ -1508,7 +1438,7 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
       }),
                            FACE(UpFace,
       {
-        h = (face_geom_sub ? face_north_data[fm_idx] : (spherical_accumulation ? boundary_geometry.north : ffy * z_mult_dat[ip] * del_x_slope));
+        h = (face_geom_sub ? face_north_data[fm_idx] : ffy * z_mult_dat[ip] * del_x_slope);
         vel_vec = vy;
         vel_idx = vy_l + sy_v;
 
@@ -1517,7 +1447,7 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
         u_old = h
                 * PMean(pp[ip], pp[ip + sy_p],
                         permyp[ip], permyp[ip + sy_p])
-                * (diff / (face_geom_sub ? face_dy_data[fm_idx] : (spherical_accumulation ? boundary_geometry.dy : dy)))
+                * (diff / (face_geom_sub ? face_dy_data[fm_idx] : dy))
                 * RPMean(pp[ip], pp[ip + sy_p],
                          rpp[ip] * dp[ip], rpp[ip + sy_p] * dp[ip + sy_p])
                 / viscosity;
@@ -1533,7 +1463,7 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
       }),
                            FACE(BackFace,
       {
-        h = (face_geom_sub ? face_horizontal_data[fm_idx] : (spherical_accumulation ? boundary_geometry.horizontal : ffz * del_x_slope * del_y_slope));
+        h = (face_geom_sub ? face_horizontal_data[fm_idx] : ffz * del_x_slope * del_y_slope);
         vel_vec = vz;
         vel_idx = vz_l;
 
@@ -1559,7 +1489,7 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
       }),
                            FACE(FrontFace,
       {
-        h = (face_geom_sub ? face_horizontal_data[fm_idx] : (spherical_accumulation ? boundary_geometry.horizontal : ffz * del_x_slope * del_y_slope));
+        h = (face_geom_sub ? face_horizontal_data[fm_idx] : ffz * del_x_slope * del_y_slope);
         vel_vec = vz;
         vel_idx = vz_l + sz_v;
 
@@ -1922,20 +1852,9 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
         /* h denotes face area here, not pressure head. */
         h = ffz * del_x_slope * del_y_slope;
         int fm_idx = face_geom_sub ? SubvectorEltIndex(face_geom_sub, i, j, k) : 0;
-        if (spherical_accumulation)
+        if (face_geom_sub)
         {
-          if (face_geom_sub)
-          {
-            h = face_horizontal_data[fm_idx];
-          }
-          else
-          {
-            PFHorizontalGeometry geometry = PFGetHorizontalGeometry(
-              problem_data, is, i, j, k, dx, dy,
-              dz * PFFaceScale(ProblemDataZmult(problem_data), is, i, j, k),
-              longitude_width, latitude_origin, latitude_width, r);
-            h = geometry.horizontal;
-          }
+          h = face_horizontal_data[fm_idx];
         }
         vel_vec = vz;
         vel_idx = vz_l + sz_v;
@@ -1945,7 +1864,7 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
 /* add flux loss equal to excess head that overwrites the prior overland flux */
         /* Retain the original Cartesian drainage law; use the actual top
          * face area for its integrated spherical contribution. */
-        double drainage_area = spherical_accumulation ? h : (vol / dz);
+        double drainage_area = face_geom_sub ? h : (vol / dz);
         q_overlnd = drainage_area * dt * (pfmax(pp[ip], 0.0) - 0.0);
 
         fp[ip] += q_overlnd;
@@ -2504,7 +2423,6 @@ void NlFunctionEval(Vector *     pressure, /* Current pressure values */
   return;
 }
 
-
 /*--------------------------------------------------------------------------
  * NlFunctionEvalInitInstanceXtra
  *--------------------------------------------------------------------------*/
@@ -2598,7 +2516,6 @@ PFModule    *NlFunctionEvalInitInstanceXtra(Problem *problem,
   return this_module;
 }
 
-
 /*--------------------------------------------------------------------------
  * NlFunctionEvalFreeInstanceXtra
  *--------------------------------------------------------------------------*/
@@ -2634,7 +2551,6 @@ void  NlFunctionEvalFreeInstanceXtra()
   }
 }
 
-
 /*--------------------------------------------------------------------------
  * NlFunctionEvalNewPublicXtra
  *--------------------------------------------------------------------------*/
@@ -2648,16 +2564,9 @@ PFModule   *NlFunctionEvalNewPublicXtra(char *name)
   int switch_value;
   NameArray upwind_switch_na;
 
-
   public_xtra = ctalloc(PublicXtra, 1);
 
   /* Boolean switch shared by geometry input, residual and Jacobian. */
-  NameArray spherical_na = NA_NewNameArray("False True");
-  char *spherical_key = "Solver.Experimental.SphericalAccumulation";
-  char *spherical_name = GetStringDefault(spherical_key, "False");
-  public_xtra->spherical_accumulation =
-    NA_NameToIndexExitOnError(spherical_na, spherical_name, spherical_key);
-  NA_FreeNameArray(spherical_na);
 
 /* These parameters dampen the transition/switching into overland flow to speedup
  * the spinup process. */
@@ -2708,7 +2617,6 @@ PFModule   *NlFunctionEvalNewPublicXtra(char *name)
   return this_module;
 }
 
-
 /*--------------------------------------------------------------------------
  * NlFunctionEvalFreePublicXtra
  *--------------------------------------------------------------------------*/
@@ -2718,14 +2626,12 @@ void  NlFunctionEvalFreePublicXtra()
   PFModule    *this_module = ThisPFModule;
   PublicXtra  *public_xtra = (PublicXtra*)PFModulePublicXtra(this_module);
 
-
   if (public_xtra)
   {
     SeepageLookupFree(&(public_xtra->seepage));
     tfree(public_xtra);
   }
 }
-
 
 /*--------------------------------------------------------------------------
  * NlFunctionEvalSizeOfTempData

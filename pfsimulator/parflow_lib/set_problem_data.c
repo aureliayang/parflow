@@ -35,7 +35,6 @@
 *****************************************************************************/
 
 #include "parflow.h"
-#include "face_metrics.h"
 #include <string.h>
 
 
@@ -76,7 +75,7 @@ typedef struct {
 
 
 /* All ranks must reject invalid geometry together, before halo communication. */
-static void CheckSphericalGeometry(int invalid, const char *message)
+static void CheckFaceMetrics(int invalid, const char *message)
 {
   amps_Invoice invoice = amps_NewInvoice("%i", &invalid);
   amps_AllReduce(amps_CommWorld, invoice, amps_Max);
@@ -116,7 +115,7 @@ static Vector *ReadFaceMetric(Grid *grid, char *filename, int axis)
   Vector *v = NewVectorType(fg, 1, 2, vector_cell_centered);
   InitVectorAll(v, NAN);
   FILE *file = fopen(filename, "rb");
-  CheckSphericalGeometry(file == NULL, "Cannot open face metric PFB (use a shared, undistributed file)");
+  CheckFaceMetrics(file == NULL, "Cannot open face metric PFB (use a shared, undistributed file)");
   for (int b = 0; b < 3; b++) FacePFBWord(file, 8, &invalid);
   int dims[3];
   for (int b = 0; b < 3; b++) dims[b] = (int)FacePFBWord(file, 4, &invalid);
@@ -130,7 +129,7 @@ static Vector *ReadFaceMetric(Grid *grid, char *filename, int axis)
   }
   int blocks = (int)FacePFBWord(file, 4, &invalid);
   invalid |= blocks <= 0;
-  CheckSphericalGeometry(invalid, "Face metric PFB has an invalid header or dimensions");
+  CheckFaceMetrics(invalid, "Face metric PFB has an invalid header or dimensions");
   for (int b = 0; b < blocks; b++)
   {
     int origin[3], size[3];
@@ -145,7 +144,7 @@ static Vector *ReadFaceMetric(Grid *grid, char *filename, int axis)
                   * Both use the same dense, unit-stride payload layout. */
                  || (refinement != 0 && refinement != 1);
     }
-    CheckSphericalGeometry(invalid, "Face metric PFB contains an invalid or refined subgrid");
+    CheckFaceMetrics(invalid, "Face metric PFB contains an invalid or refined subgrid");
     for (int k = origin[2]; k < origin[2] + size[2]; k++)
       for (int j = origin[1]; j < origin[1] + size[1]; j++)
         for (int i = origin[0]; i < origin[0] + size[0]; i++)
@@ -166,7 +165,7 @@ static Vector *ReadFaceMetric(Grid *grid, char *filename, int axis)
   }
   invalid |= fgetc(file) != EOF;
   fclose(file);
-  CheckSphericalGeometry(invalid, "Face metric PFB is truncated, has trailing data, or nonpositive/nonfinite scales");
+  CheckFaceMetrics(invalid, "Face metric PFB is truncated, has trailing data, or nonpositive/nonfinite scales");
   /* Fill physical exterior halos by constant extension. Inter-rank halos were
    * read directly from the same global file, including edge/corner values. */
   ForSubgridI(is, GridSubgrids(fg))
@@ -184,7 +183,7 @@ static Vector *ReadFaceMetric(Grid *grid, char *filename, int axis)
           invalid |= !isfinite(val) || val <= 0.0;
         }
   }
-  CheckSphericalGeometry(invalid, "Face metric PFB does not cover the local grid and halo");
+  CheckFaceMetrics(invalid, "Face metric PFB does not cover the local grid and halo");
   return v;
 }
 
@@ -195,11 +194,6 @@ static void PrepareFaceMetrics(ProblemData *pd)
   int enabled = NA_NameToIndexExitOnError(names, GetStringDefault(key, "False"), key);
   NA_FreeNameArray(names);
   if (!enabled) return;
-  names = NA_NewNameArray("False True");
-  key = "Solver.Experimental.SphericalAccumulation";
-  int spherical = NA_NameToIndexExitOnError(names, GetStringDefault(key, "False"), key);
-  NA_FreeNameArray(names);
-  CheckSphericalGeometry(spherical, "FaceMetrics and SphericalAccumulation are mutually exclusive");
   Background *bg = GlobalsBackground;
   int invalid = BackgroundIX(bg) != 0 || BackgroundIY(bg) != 0 || BackgroundIZ(bg) != 0
                 || !isfinite(BackgroundDX(bg)) || BackgroundDX(bg) <= 0.0
@@ -211,55 +205,23 @@ static void PrepareFaceMetrics(ProblemData *pd)
     Subgrid *sg = GridSubgrid(grid, is);
     invalid |= SubgridRX(sg) || SubgridRY(sg) || SubgridRZ(sg);
   }
-  CheckSphericalGeometry(invalid, "FaceMetrics requires a zero-origin unrefined index grid and positive finite meter spacing");
+  CheckFaceMetrics(invalid, "FaceMetrics requires a zero-origin unrefined index grid and positive finite meter spacing");
   pd->face_dx_scale = ReadFaceMetric(grid, GetString("Solver.FaceMetrics.DXScale.FileName"), 1);
   pd->face_dy_scale = ReadFaceMetric(grid, GetString("Solver.FaceMetrics.DYScale.FileName"), 0);
 }
 
-/* Validate reference-sphere geometry and prepare actual layer-thickness halos. */
-static void PrepareSphericalGeometry(ProblemData *problem_data)
+/* Exchange dz multipliers and extend them into the physical-boundary halo. */
+static void PrepareFaceMetricThickness(ProblemData *problem_data)
 {
   Grid *grid = VectorGrid(ProblemDataZmult(problem_data));
   Background *bg = GlobalsBackground;
-  NameArray spherical_na = NA_NewNameArray("False True");
-  char *spherical_key = "Solver.Experimental.SphericalAccumulation";
-  char *spherical_name = GetStringDefault(spherical_key, "False");
-  int enabled = NA_NameToIndexExitOnError(spherical_na, spherical_name, spherical_key);
-  NA_FreeNameArray(spherical_na);
   int is, i, j, k;
   int invalid = 0;
-  if (!enabled && !problem_data->face_dx_scale)
-    return;
+  if (!problem_data->face_dx_scale) return;
 
-  double reference_radius = 0.0;
-  if (enabled)
-  {
-    reference_radius = GetDouble("Solver.SphericalGeometry.ReferenceRadius");
-    CheckSphericalGeometry(!isfinite(reference_radius) || reference_radius <= 0.0,
-                         "Solver.SphericalGeometry.ReferenceRadius must be finite and positive (meters)");
-  }
-  double dx = BackgroundDX(bg);
-  double dy = BackgroundDY(bg);
   int ilo = BackgroundIX(bg), ihi = ilo + BackgroundNX(bg) - 1;
   int jlo = BackgroundIY(bg), jhi = jlo + BackgroundNY(bg) - 1;
   int klo = BackgroundIZ(bg), khi = klo + BackgroundNZ(bg) - 1;
-  if (enabled)
-  {
-    double south = BackgroundY(bg) + jlo * dy;
-    double north = BackgroundY(bg) + (jhi + 1) * dy;
-    invalid = !isfinite(dx) || !isfinite(dy) || dx <= 0.0 || dy <= 0.0
-              || !isfinite(south) || !isfinite(north) || south <= -90.0 || north >= 90.0
-              || dx * BackgroundNX(bg) > 360.0;
-    ForSubgridI(is, GridSubgrids(grid))
-    {
-      Subgrid *sg = GridSubgrid(grid, is);
-      invalid |= SubgridRX(sg) != 0 || SubgridRY(sg) != 0 || SubgridRZ(sg) != 0;
-    }
-    CheckSphericalGeometry(invalid,
-                           "Spherical geometry requires an unrefined grid, positive angular spacing in degrees, "
-                           "longitude span <= 360 degrees and latitude boundaries strictly between -90 and 90 degrees");
-
-  }
 
   Vector *thickness = NewVectorType(grid, 1, 3, vector_cell_centered);
   InitVectorAll(thickness, NAN);
@@ -284,12 +246,12 @@ static void PrepareSphericalGeometry(ProblemData *problem_data)
                      || !isfinite(dz) || dz <= 0.0;
         }
   }
-  CheckSphericalGeometry(invalid, "Spherical layer thickness must be finite and positive");
+  CheckFaceMetrics(invalid, "FaceMetrics layer thickness must be finite and positive");
 
   VectorUpdateCommHandle *handle = InitVectorUpdate(thickness, VectorUpdateGodunov);
   FinalizeVectorUpdate(handle);
 
-  /* Extend actual thickness into the physical-boundary halo. No radius field is needed. */
+  /* Extend actual thickness into the physical-boundary halo. */
   invalid = 0;
   ForSubgridI(is, GridSubgrids(grid))
   {
@@ -310,13 +272,12 @@ static void PrepareSphericalGeometry(ProblemData *problem_data)
           invalid |= !isfinite(multiplier) || multiplier <= 0.0;
         }
   }
-  CheckSphericalGeometry(invalid, "Spherical thickness ghost construction failed");
+  CheckFaceMetrics(invalid, "FaceMetrics thickness ghost construction failed");
   FreeVector(thickness);
-  ProblemDataReferenceRadius(problem_data) = reference_radius;
 }
 
-/* Build the static derived geometry used by FaceMetrics.  The source face
- * scale fields and the dz multiplier are immutable after initialization in
+/* Build the static derived geometry from the face-scale PFBs. The source face
+ * scale fields and dz multiplier are immutable in
  * this path, so all arithmetic below can be removed from NL residual/Jacobian
  * evaluations. */
 static void PrepareFaceGeometryCache(ProblemData *pd)
@@ -348,6 +309,10 @@ static void PrepareFaceGeometryCache(ProblemData *pd)
     double *zd = SubvectorData(zs);
     double *od[8];
     for (int n = 0; n < 8; n++) od[n] = SubvectorData(out[n]);
+    Subvector *xs_sub = VectorSubvector(pd->face_dx_scale, is);
+    Subvector *ys_sub = VectorSubvector(pd->face_dy_scale, is);
+    const double *xs_data = SubvectorData(xs_sub);
+    const double *ys_data = SubvectorData(ys_sub);
     double dx = SubgridDX(sg), dy = SubgridDY(sg), dz = SubgridDZ(sg);
     for (k = SubgridIZ(sg); k < SubgridIZ(sg) + SubgridNZ(sg); k++)
       for (j = SubgridIY(sg); j < SubgridIY(sg) + SubgridNY(sg); j++)
@@ -355,20 +320,20 @@ static void PrepareFaceGeometryCache(ProblemData *pd)
         {
           int ic = SubvectorEltIndex(out[0], i, j, k);
           double thickness = dz * zd[SubvectorEltIndex(zs, i, j, k)];
-          double xs = PFFaceScale(pd->face_dx_scale, is, i, j, k);
-          double xn = PFFaceScale(pd->face_dx_scale, is, i, j + 1, k);
-          double yw = PFFaceScale(pd->face_dy_scale, is, i, j, k);
-          double ye = PFFaceScale(pd->face_dy_scale, is, i + 1, j, k);
+          double xs = xs_data[SubvectorEltIndex(xs_sub, i, j, k)];
+          double xn = xs_data[SubvectorEltIndex(xs_sub, i, j + 1, k)];
+          double yw = ys_data[SubvectorEltIndex(ys_sub, i, j, k)];
+          double ye = ys_data[SubvectorEltIndex(ys_sub, i + 1, j, k)];
           double gx = dx * 0.5 * (xs + xn);
           double gy = dy * 0.5 * (yw + ye);
           double horizontal = gx * gy;
-          double volume = horizontal * thickness;
-          od[0][ic] = gx;
-          od[1][ic] = gy;
           od[2][ic] = dy * yw * thickness;
           od[3][ic] = dy * ye * thickness;
           od[4][ic] = dx * xs * thickness;
           od[5][ic] = dx * xn * thickness;
+          double volume = horizontal * thickness;
+          od[0][ic] = gx;
+          od[1][ic] = gy;
           od[6][ic] = horizontal;
           od[7][ic] = volume;
           invalid |= !isfinite(thickness) || thickness <= 0.0
@@ -376,7 +341,7 @@ static void PrepareFaceGeometryCache(ProblemData *pd)
                      || !isfinite(volume) || volume <= 0.0;
         }
   }
-  CheckSphericalGeometry(invalid, "FaceMetrics derived geometry cache construction failed");
+  CheckFaceMetrics(invalid, "FaceMetrics derived geometry cache construction failed");
 
   /* Exchange one-cell halos so boundary and neighboring subgrid accesses see
    * the same cached geometry as the original face-scale implementation. */
@@ -466,9 +431,9 @@ void          SetProblemData(
                        (problem_data,
                         ProblemDataZmult(problem_data)));
 
-    /* Prepare reference-sphere geometry only after actual layer thicknesses. */
+    /* Prepare geometry only after actual layer thicknesses. */
     PrepareFaceMetrics(problem_data);
-    PrepareSphericalGeometry(problem_data);
+    PrepareFaceMetricThickness(problem_data);
     PrepareFaceGeometryCache(problem_data);
 
 

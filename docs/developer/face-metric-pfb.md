@@ -1,12 +1,12 @@
 # Experimental horizontal face metrics
 
-Branch `face-metric-pfb` retains the reference-sphere implementation and adds a
-mutually exclusive input mode. ComputationalGrid coordinates and spacings remain
-**meters**, including the spacings passed to PFMG. Angles are only used by the
-external Python preparation helper. Existing spherical mode is not changed.
+Branch `face-metric-gpu-consolidated` supports only external face-scale PFB
+inputs. ComputationalGrid coordinates and spacings remain **meters**, including
+the spacings passed to PFMG. Angles are used only in external preprocessing.
+The old longitude/latitude input implementation remains on the separate
+`spherical-coordinates` branch and is not included here.
 
 ```python
-run.Solver.Experimental.SphericalAccumulation = False
 run.Solver.FaceMetrics.Enabled = True
 run.Solver.FaceMetrics.DXScale.FileName = "dx_scale.pfb"
 run.Solver.FaceMetrics.DYScale.FileName = "dy_scale.pfb"
@@ -41,18 +41,17 @@ scales. Let dx0,dy0 be background spacings and t=DZ*z_mult be actual thickness:
 - south/north areas: dx0*xs*t, dx0*xn*t;
 - horizontal area: dx*dy; volume: dx*dy*t.
 
-All-one fields recover Cartesian geometry. Residual and Jacobian share the same
-C helper. Positive-face integrated fluxes are computed once and applied with
+All-one fields recover Cartesian geometry. Residual and Jacobian read the same
+initialized geometry arrays. Positive-face integrated fluxes are computed once and applied with
 opposite signs, including when face metrics vary. Metrics are static, independent
 of pressure; slopes and other physical inputs retain their existing meanings.
 
 This is an **orthogonal face-scale approximation**, not a general curvilinear
 metric tensor. For reference-sphere fields, center dx uses the average of the
 north/south cosine values. Horizontal area uses trapezoidal latitude quadrature,
-not the exact sine integral used by SphericalAccumulation. Its area ratio to the
+rather than the exact spherical sine integral. Its area ratio to the
 exact integral is (dphi/2)*cot(dphi/2), approximately 1-dphi^2/12. At 0.1 degrees
-the relative area difference is about 2.54e-7. Do not claim the two modes are
-bitwise equivalent. Arbitrary independent 3-D scales need not describe a
+the relative area difference is about 2.54e-7. Do not claim exact spherical integration. Arbitrary independent 3-D scales need not describe a
 geometrically realizable mesh.
 
 Scope: unrefined index grid; underground Richards flow, storage/source terms,
@@ -85,9 +84,9 @@ overwrite simulation cases or start/push any production runs.
 ## Validation
 
 `python3 test/python/face_metrics_geometry.py` compiles the actual C PFB reader
-and geometry helper with address/undefined-behavior sanitizers. It checks all-one
+and geometry initialization with address/undefined-behavior sanitizers. It checks all-one
 and nonuniform fields, multiple subgrids, partition halos, physical halos,
-invalid values/dimensions, and the legacy spherical formula. This is not an MPI
+invalid values/dimensions, layer indexing and a shared geometry-array index. This is not an MPI
 end-to-end solver convergence test. A full ParFlow build/run remains required on
 a machine with the normal dependencies.
 
@@ -99,8 +98,8 @@ Residual and Jacobian assembly acquire the needed data pointers at the start of
 each subgrid loop. Each cell computes one index using the geometry subvector
 (not the pressure index, whose ghost layout may differ), and formulas read the
 cached arrays directly. There is no static pointer cache, per-cell subgrid-key
-check or intermediate geometry struct on the FaceMetrics path. The original
-reference-sphere calculation remains available when FaceMetrics is disabled.
+check or intermediate geometry struct on the FaceMetrics path. When FaceMetrics is disabled, the original Cartesian path is used. There is
+no non-cached geometry fallback, device placeholder, or `face_metrics.h`.
 
 ### Original-algorithm compatibility
 
@@ -117,3 +116,10 @@ An extracted-code comparison against the original master (`7958b8af`) passed
 faces and all six symmetric boundary faces, including variable density and
 layer thickness. This is algebra-level validation, not proof of identical MPI
 solver trajectories; a complete all-one/control run is still required.
+
+### Input migration
+
+Remove the old `Solver.Experimental.SphericalAccumulation` and
+`Solver.SphericalGeometry.ReferenceRadius` settings from input scripts. This
+branch accepts meter background spacings plus `Solver.FaceMetrics` PFB inputs;
+it does not convert angular background coordinates internally.

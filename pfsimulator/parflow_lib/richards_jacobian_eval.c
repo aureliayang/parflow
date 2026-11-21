@@ -40,7 +40,6 @@
  */
 
 #include "parflow.h"
-#include "face_metrics.h"
 #include "seepage.h"
 #include "llnlmath.h"
 #include "llnltyps.h"
@@ -63,7 +62,6 @@ typedef struct {
   enum JacobianType type;
   double SpinupDampP1; // NBE
   double SpinupDampP2; // NBE
-  int spherical_accumulation; /* Experimental spherical residual/Jacobian geometry. */
   int tfgupwind;  // RMM
   int using_MGSemi;  // RMM
   SeepageLookup seepage;
@@ -132,7 +130,6 @@ int jacobian_stencil_shape[7][3] = { { 0, 0, 0 },
                                      { 0, 1, 0 },
                                      { 0, 0, -1 },
                                      { 0, 0, 1 } };
-
 
 int jacobian_stencil_shape_C[5][3] = { { 0, 0, 0 },
                                        { -1, 0, 0 },
@@ -211,7 +208,6 @@ int       KINSolMatVec(
 
   return(0);
 }
-
 
 /*  This routine evaluates the Richards jacobian based on the current
  *  pressure values.  */
@@ -393,20 +389,7 @@ void    RichardsJacobianEval(
                                                            density, gravity, problem_data,
                                                            CALCDER));
 
-  /* Match NlFunctionEval geometry for storage, internal fluxes, FluxBC,
-   * and the top SeepageFaceBC. Other boundary types remain Cartesian. */
-  int spherical_accumulation = public_xtra->spherical_accumulation;
-  double longitude_width = 0.0;
-  double latitude_origin = 0.0;
-  double latitude_width = 0.0;
-  if (spherical_accumulation)
-  {
-    double radians_per_degree = acos(-1.0) / 180.0;
-    longitude_width = BackgroundDX(GlobalsBackground) * radians_per_degree;
-    latitude_origin = BackgroundY(GlobalsBackground) * radians_per_degree;
-    latitude_width = BackgroundDY(GlobalsBackground) * radians_per_degree;
-  }
-  spherical_accumulation |= problem_data->face_dx_scale != NULL;
+  /* Use the same cached FaceMetrics geometry as NlFunctionEval. */
 
   ForSubgridI(is, GridSubgrids(grid))
   {
@@ -479,14 +462,7 @@ void    RichardsJacobianEval(
       int iv = SubvectorEltIndex(d_sub, i, j, k);
       double vol2 = vol * z_mult_dat[ipo];
       int fm_idx = face_geom_sub ? SubvectorEltIndex(face_geom_sub, i, j, k) : 0;
-      if (spherical_accumulation && !face_geom_sub)
-      {
-        PFHorizontalGeometry geometry = PFGetHorizontalGeometry(
-          problem_data, is, i, j, k, dx, dy,
-          dz * PFFaceScale(ProblemDataZmult(problem_data), is, i, j, k),
-          longitude_width, latitude_origin, latitude_width, r);
-        vol2 = geometry.volume;
-      }
+
       cp[im] += (sdp[iv] * dp[iv] + sp[iv] * ddp[iv])
                 * pop[ipo] * (face_geom_sub ? face_volume_data[fm_idx] : vol2) + ss[iv] * (face_geom_sub ? face_volume_data[fm_idx] : vol2) * (sdp[iv] * dp[iv] * pp[iv] + sp[iv] * ddp[iv] * pp[iv] + sp[iv] * dp[iv]); //sk start
     });
@@ -662,18 +638,6 @@ void    RichardsJacobianEval(
       double area_front = ffy * z_mult_dat[ip];
       double area_upper = ffz;
       int fm_idx = face_geom_sub ? SubvectorEltIndex(face_geom_sub, i, j, k) : 0;
-      if (spherical_accumulation && !face_geom_sub)
-      {
-        PFHorizontalGeometry geometry = PFGetHorizontalGeometry(
-          problem_data, is, i, j, k, dx, dy,
-          dz * PFFaceScale(ProblemDataZmult(problem_data), is, i, j, k),
-          longitude_width, latitude_origin, latitude_width, r);
-        distance_x = geometry.dx;
-        distance_y = geometry.dy;
-        area_right = geometry.east;
-        area_front = geometry.north;
-        area_upper = geometry.horizontal;
-      }
 
       double prod = rpp[ip] * dp[ip];
       double prod_der = rpdp[ip] * dp[ip] + rpp[ip] * ddp[ip];
@@ -731,7 +695,6 @@ void    RichardsJacobianEval(
             }
       }
 
-
       /* diff >= 0 implies flow goes left to right */
       double diff = pp[ip] - pp[ip + 1];
       double updir = (diff / (face_geom_sub ? face_dx_data[fm_idx] : distance_x)) * x_dir_g_c - x_dir_g;
@@ -741,10 +704,8 @@ void    RichardsJacobianEval(
                        * PMean(pp[ip], pp[ip + 1], permxp[ip], permxp[ip + 1])
                        / viscosity;
 
-
       double sym_west_temp = (-x_coeff
                               * RPMean(updir, 0.0, prod, prod_rt)) * x_dir_g_c; //RMM TFG contributions, sym
-
 
       double west_temp = (-x_coeff * diff
                           * RPMean(updir, 0.0, prod_der, 0.0)) * x_dir_g_c
@@ -765,7 +726,6 @@ void    RichardsJacobianEval(
       diff = pp[ip] - pp[ip + sy_v];
       updir = (diff / (face_geom_sub ? face_dy_data[fm_idx] : distance_y)) * y_dir_g_c - y_dir_g;
 
-
       /* multiply y_coeff by FB in y */
       double y_coeff = FBy_dat[ip] * dt * (face_geom_sub ? face_north_data[fm_idx] : area_front) * (1.0 / (face_geom_sub ? face_dy_data[fm_idx] : distance_y))
                        * PMean(pp[ip], pp[ip + sy_v], permyp[ip], permyp[ip + sy_v])
@@ -780,7 +740,6 @@ void    RichardsJacobianEval(
 
       south_temp += (y_coeff * (face_geom_sub ? face_dy_data[fm_idx] : distance_y) * RPMean(updir, 0.0, prod_der, 0.0)) * y_dir_g; //RMM TFG contributions, non sym
 
-
       double sym_north_temp = y_coeff
                               * -RPMean(updir, 0.0, prod, prod_no) * y_dir_g_c; //RMM  TFG contributions non SYMM
 
@@ -794,11 +753,9 @@ void    RichardsJacobianEval(
       double sep = distance_z;
       /* diff >= 0 implies flow goes lower to upper */
 
-
       double lower_cond = pp[ip] / sep - (z_mult_dat[ip] / (z_mult_dat[ip] + z_mult_dat[ip + sz_v])) * dp[ip] * gravity;
 
       double upper_cond = pp[ip + sz_v] / sep + (z_mult_dat[ip + sz_v] / (z_mult_dat[ip] + z_mult_dat[ip + sz_v])) * dp[ip + sz_v] * gravity;
-
 
       diff = lower_cond - upper_cond;
 
@@ -943,7 +900,6 @@ void    RichardsJacobianEval(
                              BeforeAllCells(DoNothing),
                              LoopVars(i, j, k, ival, bc_struct, ipatch, is),
                              Locals(int ip, im, fm_idx;
-                                    PFHorizontalGeometry boundary_geometry;
                                     double coeff, diff, prod, prod_der;
                                     double lower_cond, upper_cond;
                                     double prod_lo, prod_up; ),
@@ -951,13 +907,6 @@ void    RichardsJacobianEval(
           ip = SubvectorEltIndex(p_sub, i, j, k);
           im = SubmatrixEltIndex(J_sub, i, j, k);
           fm_idx = face_geom_sub ? SubvectorEltIndex(face_geom_sub, i, j, k) : 0;
-          if (spherical_accumulation && !face_geom_sub)
-          {
-            boundary_geometry = PFGetHorizontalGeometry(
-              problem_data, is, i, j, k, dx, dy,
-              dz * PFFaceScale(ProblemDataZmult(problem_data), is, i, j, k),
-              longitude_width, latitude_origin, latitude_width, r);
-          }
 
           /* SGS added this as prod was not being set to anything. Check with carol. */
           prod = rpp[ip] * dp[ip];
@@ -973,7 +922,7 @@ void    RichardsJacobianEval(
         {
           diff = pp[ip - 1] - pp[ip];
           prod_der = rpdp[ip - 1] * dp[ip - 1] + rpp[ip - 1] * ddp[ip - 1];
-          coeff = dt * (face_geom_sub ? face_west_data[fm_idx] : (spherical_accumulation ? boundary_geometry.west : z_mult_dat[ip] * ffx)) * (1.0 / (face_geom_sub ? face_dx_data[fm_idx] : (spherical_accumulation ? boundary_geometry.dx : dx)))
+          coeff = dt * (face_geom_sub ? face_west_data[fm_idx] : z_mult_dat[ip] * ffx) * (1.0 / (face_geom_sub ? face_dx_data[fm_idx] : dx))
                   * PMean(pp[ip - 1], pp[ip], permxp[ip - 1], permxp[ip])
                   / viscosity;
           wp[im] = -coeff * diff
@@ -983,7 +932,7 @@ void    RichardsJacobianEval(
         {
           diff = pp[ip] - pp[ip + 1];
           prod_der = rpdp[ip + 1] * dp[ip + 1] + rpp[ip + 1] * ddp[ip + 1];
-          coeff = dt * (face_geom_sub ? face_east_data[fm_idx] : (spherical_accumulation ? boundary_geometry.east : z_mult_dat[ip] * ffx)) * (1.0 / (face_geom_sub ? face_dx_data[fm_idx] : (spherical_accumulation ? boundary_geometry.dx : dx)))
+          coeff = dt * (face_geom_sub ? face_east_data[fm_idx] : z_mult_dat[ip] * ffx) * (1.0 / (face_geom_sub ? face_dx_data[fm_idx] : dx))
                   * PMean(pp[ip], pp[ip + 1], permxp[ip], permxp[ip + 1])
                   / viscosity;
           ep[im] = coeff * diff
@@ -994,7 +943,7 @@ void    RichardsJacobianEval(
           diff = pp[ip - sy_v] - pp[ip];
           prod_der = rpdp[ip - sy_v] * dp[ip - sy_v]
                      + rpp[ip - sy_v] * ddp[ip - sy_v];
-          coeff = dt * (face_geom_sub ? face_south_data[fm_idx] : (spherical_accumulation ? boundary_geometry.south : z_mult_dat[ip] * ffy)) * (1.0 / (face_geom_sub ? face_dy_data[fm_idx] : (spherical_accumulation ? boundary_geometry.dy : dy)))
+          coeff = dt * (face_geom_sub ? face_south_data[fm_idx] : z_mult_dat[ip] * ffy) * (1.0 / (face_geom_sub ? face_dy_data[fm_idx] : dy))
                   * PMean(pp[ip - sy_v], pp[ip],
                           permyp[ip - sy_v], permyp[ip])
                   / viscosity;
@@ -1006,7 +955,7 @@ void    RichardsJacobianEval(
           diff = pp[ip] - pp[ip + sy_v];
           prod_der = rpdp[ip + sy_v] * dp[ip + sy_v]
                      + rpp[ip + sy_v] * ddp[ip + sy_v];
-          coeff = dt * (face_geom_sub ? face_north_data[fm_idx] : (spherical_accumulation ? boundary_geometry.north : z_mult_dat[ip] * ffy)) * (1.0 / (face_geom_sub ? face_dy_data[fm_idx] : (spherical_accumulation ? boundary_geometry.dy : dy)))
+          coeff = dt * (face_geom_sub ? face_north_data[fm_idx] : z_mult_dat[ip] * ffy) * (1.0 / (face_geom_sub ? face_dy_data[fm_idx] : dy))
                   * PMean(pp[ip], pp[ip + sy_v],
                           permyp[ip], permyp[ip + sy_v])
                   / viscosity;
@@ -1024,7 +973,7 @@ void    RichardsJacobianEval(
           prod_der = rpdp[ip - sz_v] * dp[ip - sz_v]
                      + rpp[ip - sz_v] * ddp[ip - sz_v];
           prod_lo = rpp[ip - sz_v] * dp[ip - sz_v];
-          coeff = dt * (face_geom_sub ? face_horizontal_data[fm_idx] : (spherical_accumulation ? boundary_geometry.horizontal : ffz)) * (1.0 / (dz * Mean(z_mult_dat[ip], z_mult_dat[ip - sz_v])))
+          coeff = dt * (face_geom_sub ? face_horizontal_data[fm_idx] : ffz) * (1.0 / (dz * Mean(z_mult_dat[ip], z_mult_dat[ip - sz_v])))
                   * PMeanDZ(permzp[ip - sz_v], permzp[ip],
                             z_mult_dat[ip - sz_v], z_mult_dat[ip])
                   / viscosity;
@@ -1047,7 +996,7 @@ void    RichardsJacobianEval(
           prod_der = rpdp[ip + sz_v] * dp[ip + sz_v]
                      + rpp[ip + sz_v] * ddp[ip + sz_v];
           prod_up = rpp[ip + sz_v] * dp[ip + sz_v];
-          coeff = dt * (face_geom_sub ? face_horizontal_data[fm_idx] : (spherical_accumulation ? boundary_geometry.horizontal : ffz)) * (1.0 / (dz * Mean(z_mult_dat[ip], z_mult_dat[ip + sz_v])))
+          coeff = dt * (face_geom_sub ? face_horizontal_data[fm_idx] : ffz) * (1.0 / (dz * Mean(z_mult_dat[ip], z_mult_dat[ip + sz_v])))
                   * PMeanDZ(permzp[ip], permzp[ip + sz_v],
                             z_mult_dat[ip], z_mult_dat[ip + sz_v])
                   / viscosity;
@@ -1454,14 +1403,7 @@ void    RichardsJacobianEval(
         {
           double top_area = vol / dz;
           int fm_idx = face_geom_sub ? SubvectorEltIndex(face_geom_sub, i, j, k) : 0;
-          if (spherical_accumulation && !face_geom_sub)
-          {
-            PFHorizontalGeometry geometry = PFGetHorizontalGeometry(
-              problem_data, is, i, j, k, dx, dy,
-              dz * PFFaceScale(ProblemDataZmult(problem_data), is, i, j, k),
-              longitude_width, latitude_origin, latitude_width, r);
-            top_area = geometry.horizontal;
-          }
+
           cp[im] += (face_geom_sub ? face_horizontal_data[fm_idx] : top_area) * dt;
         }
         else
@@ -1549,8 +1491,6 @@ void    RichardsJacobianEval(
 
   PFModuleInvokeType(RichardsBCInternalInvoke, bc_internal, (problem, problem_data, NULL, J, time,
                                                              pressure, CALCDER));
-
-
 
   if (public_xtra->type == overland_flow || public_xtra->using_MGSemi == 1)
   {
@@ -2283,7 +2223,6 @@ void    RichardsJacobianEval(
     });
   }
 
-
   /*-----------------------------------------------------------------------
    * Update matrix ghost points
    *-----------------------------------------------------------------------*/
@@ -2329,7 +2268,6 @@ void    RichardsJacobianEval(
 
   return;
 }
-
 
 /*--------------------------------------------------------------------------
  * RichardsJacobianEvalInitInstanceXtra
@@ -2472,11 +2410,9 @@ PFModule    *RichardsJacobianEvalInitInstanceXtra(
     PFModuleReNewInstance((instance_xtra->overlandflow_module_kin), ());
   }
 
-
   PFModuleInstanceXtra(this_module) = instance_xtra;
   return this_module;
 }
-
 
 /*--------------------------------------------------------------------------
  * RichardsJacobianEvalFreeInstanceXtra
@@ -2521,7 +2457,6 @@ void  RichardsJacobianEvalFreeInstanceXtra()
   }
 }
 
-
 /*--------------------------------------------------------------------------
  * RichardsJacobianEvalNewPublicXtra
  *--------------------------------------------------------------------------*/
@@ -2537,17 +2472,10 @@ PFModule   *RichardsJacobianEvalNewPublicXtra(char *name)
   NameArray upwind_switch_na;
   NameArray precond_switch_na;
 
-
   (void)name;
 
   public_xtra = ctalloc(PublicXtra, 1);
 
-  NameArray spherical_na = NA_NewNameArray("False True");
-  char *spherical_key = "Solver.Experimental.SphericalAccumulation";
-  char *spherical_name = GetStringDefault(spherical_key, "False");
-  public_xtra->spherical_accumulation =
-    NA_NameToIndexExitOnError(spherical_na, spherical_name, spherical_key);
-  NA_FreeNameArray(spherical_na);
 /* These parameters dampen the transition/switching into overland flow to speedup
  * the spinup process */
   sprintf(key, "OverlandSpinupDampP1");
@@ -2637,7 +2565,6 @@ PFModule   *RichardsJacobianEvalNewPublicXtra(char *name)
   return this_module;
 }
 
-
 /*--------------------------------------------------------------------------
  * RichardsJacobianEvalFreePublicXtra
  *--------------------------------------------------------------------------*/
@@ -2647,14 +2574,12 @@ void  RichardsJacobianEvalFreePublicXtra()
   PFModule    *this_module = ThisPFModule;
   PublicXtra  *public_xtra = (PublicXtra*)PFModulePublicXtra(this_module);
 
-
   if (public_xtra)
   {
     SeepageLookupFree(&(public_xtra->seepage));
     tfree(public_xtra);
   }
 }
-
 
 /*--------------------------------------------------------------------------
  * RichardsJacobianEvalSizeOfTempData

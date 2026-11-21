@@ -179,8 +179,6 @@ typedef struct {
 
   /* @RMM variable dz  */
   Vector *dz_mult;
-  /* Fixed reference sphere radius [m]; set once when spherical geometry is enabled. */
-  double reference_radius;
   Vector *face_dx_scale; /* DX on north/south faces (y-face grid). */
   Vector *face_dy_scale; /* DY on east/west faces (x-face grid). */
   /* Derived FaceMetrics geometry, built once after face scales and dz are ready. */
@@ -315,7 +313,6 @@ typedef struct {
 #define ProblemDataMannings(problem_data)       ((problem_data)->mann)   //sk
 #define ProblemDataSSlopeX(problem_data)        ((problem_data)->x_sslope)   //RMM
 #define ProblemDataSSlopeY(problem_data)        ((problem_data)->y_sslope)   //RMM
-#define ProblemDataReferenceRadius(problem_data) ((problem_data)->reference_radius)
 #define ProblemDataZmult(problem_data)          ((problem_data)->dz_mult)    //RMM
 #define ProblemDataRealSpaceZ(problem_data)     ((problem_data)->rsz)
 /*--------------------------------------------------------------------------

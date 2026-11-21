@@ -1,4 +1,4 @@
-"""Standalone C-contract test for face PFB loading and shared flow geometry.
+"""Standalone C-contract test for face PFB loading and cached flow geometry.
 
 Run with Python 3 and clang/cc. Tests the actual C reader and geometry header
 with minimal grid/vector shims, including partition halos and invalid input.
@@ -22,8 +22,8 @@ typedef struct { Subgrid *items[16]; int size; } SubgridArray;
 typedef struct { SubgridArray *local,*all; int compute_ready; } Grid;
 typedef struct { Subgrid box; double *data; } Subvector;
 typedef struct { Grid *grid; Subvector *s[16]; } Vector;
-typedef struct { int nx,ny,nz; } Background;
-Background background={4,3,2};
+typedef struct { int nx,ny,nz; double dx,dy,dz,y; } Background;
+Background background={4,3,2,100,200,20,0};
 #define GlobalsBackground (&background)
 #define BackgroundNX(b) ((b)->nx)
 #define BackgroundNY(b) ((b)->ny)
@@ -62,49 +62,84 @@ Vector *NewVectorType(Grid *g,int nc,int halo,int type){
  return v;}
 void InitVectorAll(Vector *v,double val){for(int i=0;i<v->grid->local->size;i++){
  Subvector *s=v->s[i];for(int n=0;n<s->box.nx*s->box.ny*s->box.nz;n++)s->data[n]=val;}}
-void CheckSphericalGeometry(int bad,const char *message){if(bad){fprintf(stderr,"%s\n",message);exit(2);}}
-typedef struct {Vector *face_dx_scale,*face_dy_scale;double reference_radius;} ProblemData;
-#define ProblemDataReferenceRadius(p) ((p)->reference_radius)
+void CheckFaceMetrics(int bad,const char *message){if(bad){fprintf(stderr,"%s\n",message);exit(2);}}
+typedef struct {Vector *face_dx_scale,*face_dy_scale,*zmult;Vector *face_geom_dx;Vector *face_geom_dy;Vector *face_geom_west;Vector *face_geom_east;Vector *face_geom_south;Vector *face_geom_north;Vector *face_geom_horizontal;Vector *face_geom_volume;} ProblemData;
+
+#define VectorGrid(v) ((v)->grid)
+#define GridSubgrid(g,i) ((g)->local->items[i])
+#define ProblemDataZmult(p) ((p)->zmult)
+#define SubgridIX(s) ((s)->ix)
+#define SubgridIY(s) ((s)->iy)
+#define SubgridIZ(s) ((s)->iz)
+#define SubgridNZ(s) ((s)->nz)
+#define SubgridDX(s) background.dx
+#define SubgridDY(s) background.dy
+#define SubgridDZ(s) background.dz
+#define BackgroundY(b) ((b)->y)
+#define VectorUpdateGodunov 4
+typedef Vector VectorUpdateCommHandle;
+Vector *InitVectorUpdate(Vector *v,int mode){
+ (void)mode;
+ /* Simulate local-block halo exchange; real MPI communication is not tested. */
+ for(int a=0;a<v->grid->local->size;a++){
+ Subvector *s=v->s[a];
+ for(int k=s->box.iz;k<s->box.iz+s->box.nz;k++)
+ for(int j=s->box.iy;j<s->box.iy+s->box.ny;j++)
+ for(int i=s->box.ix;i<s->box.ix+s->box.nx;i++)
+ for(int b=0;b<v->grid->local->size;b++){
+ Subgrid *g=v->grid->local->items[b];
+ if(i>=g->ix && i<g->ix+g->nx && j>=g->iy && j<g->iy+g->ny && k>=g->iz && k<g->iz+g->nz)
+ SubvectorData(s)[SubvectorEltIndex(s,i,j,k)]=SubvectorData(v->s[b])[SubvectorEltIndex(v->s[b],i,j,k)];
+ }}return v;}
+void FinalizeVectorUpdate(Vector *v){(void)v;}
 '''
 MAIN = r'''
 int main(int argc,char **argv){
- assert(argc==4);int ones=atoi(argv[3]);
- /* Repeat for two artificial ranks split in x and y, and two local blocks. */
+ assert(argc==4);int ones=atoi(argv[3]);int checks=0;
  for(int split=0;split<3;split++){
  SubgridArray *a=NewSubgridArray();
  if(split==0){Subgrid s={0,0,0,2,3,2};AppendSubgrid(DuplicateSubgrid(&s),a);}
  if(split==1){Subgrid s={2,1,0,2,2,2};AppendSubgrid(DuplicateSubgrid(&s),a);}
  if(split==2){Subgrid s={0,0,0,2,3,2},t={2,0,0,2,3,2};AppendSubgrid(DuplicateSubgrid(&s),a);AppendSubgrid(DuplicateSubgrid(&t),a);}
- Grid *g=NewGrid(a,a);ProblemData pd={0};
+ Grid *g=NewGrid(a,a);ProblemData pd={0};CreateComputePkgs(g);
  pd.face_dx_scale=ReadFaceMetric(g,argv[1],1);
  pd.face_dy_scale=ReadFaceMetric(g,argv[2],0);
+ pd.zmult=NewVectorType(g,1,1,0);
  for(int is=0;is<a->size;is++){
- Subgrid *s=a->items[is];
+ Subvector *zs=pd.zmult->s[is];
+ for(int k=zs->box.iz;k<zs->box.iz+zs->box.nz;k++)
+ for(int j=zs->box.iy;j<zs->box.iy+zs->box.ny;j++)
+ for(int i=zs->box.ix;i<zs->box.ix+zs->box.nx;i++)
+ SubvectorData(zs)[SubvectorEltIndex(zs,i,j,k)]=.5+.1*k;
+ }
+ PrepareFaceGeometryCache(&pd);
+ Vector *cache[8]={pd.face_geom_dx,pd.face_geom_dy,pd.face_geom_west,pd.face_geom_east,pd.face_geom_south,pd.face_geom_north,pd.face_geom_horizontal,pd.face_geom_volume};
+ for(int is=0;is<a->size;is++){
+ Subgrid *s=a->items[is];Subvector *idx_sub=cache[0]->s[is];
+ const double *data[8];for(int n=0;n<8;n++)data[n]=SubvectorData(cache[n]->s[is]);
  for(int k=s->iz;k<s->iz+s->nz;k++)for(int j=s->iy;j<s->iy+s->ny;j++)for(int i=s->ix;i<s->ix+s->nx;i++){
- PFHorizontalGeometry h=PFGetHorizontalGeometry(&pd,is,i,j,k,100,200,10,0,0,0,0);
- double xs=ones?1:1+0.1*j+0.01*k,xn=ones?1:1+0.1*(j+1)+0.01*k;
- double yw=ones?1:1+0.03*i,ye=ones?1:1+0.03*(i+1);
- assert(fabs(h.dx-50*(xs+xn))<1e-10);
- assert(fabs(h.dy-100*(yw+ye))<1e-10);
- assert(fabs(h.south-1000*xs)<1e-10);
- assert(fabs(h.north-1000*xn)<1e-10);
- assert(fabs(h.west-2000*yw)<1e-10);
- assert(fabs(h.east-2000*ye)<1e-10);
- assert(fabs(h.volume-h.dx*h.dy*10)<1e-8);
- /* Exterior and cross-partition halos are populated. */
- assert(isfinite(PFFaceScale(pd.face_dx_scale,is,i-1,j-1,k-1)));
+ double xs=ones?1:1+.1*j+.01*k,xn=ones?1:1+.1*(j+1)+.01*k;
+ double yw=ones?1:1+.03*i,ye=ones?1:1+.03*(i+1);
+ double dx=50*(xs+xn),dy=100*(yw+ye),t=20*(.5+.1*k);
+ double expected[8]={dx,dy,200*yw*t,200*ye*t,100*xs*t,100*xn*t,dx*dy,dx*dy*t};
+ int idx=SubvectorEltIndex(idx_sub,i,j,k);
+ assert(idx!=SubvectorEltIndex(pd.zmult->s[is],i,j,k));
+ for(int n=0;n<8;n++){
+ assert(idx==SubvectorEltIndex(cache[n]->s[is],i,j,k));
+ assert(fabs(data[n][idx]-expected[n])<1e-12*fmax(1,fabs(expected[n])));checks++;}
+ Subvector *source=pd.face_dx_scale->s[is];
+ assert(isfinite(SubvectorData(source)[SubvectorEltIndex(source,i-1,j-1,k-1)]));
  }
  }
+ if(split==2)for(int n=0;n<8;n++){
+ Subvector *s=cache[n]->s[0],*t=cache[n]->s[1];
+ assert(SubvectorData(s)[SubvectorEltIndex(s,2,1,1)]==SubvectorData(t)[SubvectorEltIndex(t,2,1,1)]);checks++;}
+
  }
- /* Legacy reference-sphere equations remain unchanged. */
- ProblemData pd={0};pd.reference_radius=6371000;
- double dp=.001,dl=.002,ps=.6,pc=ps+.5*dp;
- PFHorizontalGeometry h=PFGetHorizontalGeometry(&pd,0,0,0,0,1,1,10,dl,ps,dp,0);
- assert(fabs(h.dx-6371000*cos(pc)*dl)<1e-9);
- assert(fabs(h.horizontal-6371000.*6371000*dl*2*cos(pc)*sin(.5*dp))<1e-5);
- puts("face PFB halos and geometry passed");return 0;
+ printf("%d face reader, shared-index and initialized-cache checks passed\n",checks);return 0;
 }
 '''
+
 
 
 def write_pfb(path, nx, ny, nz, value, refinement=1):
@@ -125,7 +160,9 @@ def main():
                     source.index("static void PrepareFaceMetrics")]
     with tempfile.TemporaryDirectory() as directory:
         d = Path(directory)
-        (d / "test.c").write_text(SHIMS + reader + '\n#include "face_metrics.h"\n' + MAIN)
+        cache = source[source.index("static void PrepareFaceGeometryCache"):
+                       source.index("/*--------------------------------------------------------------------------\n * SetProblemData", source.index("static void PrepareFaceGeometryCache"))]
+        (d / "test.c").write_text(SHIMS + reader + cache + MAIN)
         subprocess.run([os.environ.get("CC", "cc"), "-std=c11", "-fsanitize=address,undefined",
                         "-I" + str(ROOT / "pfsimulator/parflow_lib"),
                         str(d / "test.c"), "-lm", "-o", str(d / "test")], check=True)
