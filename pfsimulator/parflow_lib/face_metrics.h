@@ -6,18 +6,42 @@ typedef struct {
   double dx, dy, west, east, south, north, horizontal, volume;
 } PFHorizontalGeometry;
 
-static inline double PFFaceScale(Vector *v, int is, int i, int j, int k)
+#ifdef __CUDACC__
+#define PF_FACE_METRIC_HD __host__ __device__
+#else
+#define PF_FACE_METRIC_HD
+#endif
+
+/* Retained for the non-FaceMetrics spherical fallback. The active FaceMetrics
+ * BoxLoop path reads cached arrays directly. */
+static inline PF_FACE_METRIC_HD double PFFaceScale(Vector *v, int is, int i, int j, int k)
 {
+#ifdef __CUDA_ARCH__
+  (void)v; (void)is; (void)i; (void)j; (void)k;
+  return 1.0;
+#else
   Subvector *s = VectorSubvector(v, is);
   return SubvectorData(s)[SubvectorEltIndex(s, i, j, k)];
+#endif
 }
 
-static inline PFHorizontalGeometry PFGetHorizontalGeometry(
+static inline PF_FACE_METRIC_HD PFHorizontalGeometry PFGetHorizontalGeometry(
   ProblemData *pd, int is, int i, int j, int k,
   double dx, double dy, double thickness, double dlambda, double phi0,
   double dphi, int refinement)
 {
   PFHorizontalGeometry g;
+#ifdef __CUDA_ARCH__
+  (void)pd; (void)is; (void)i; (void)j; (void)k;
+  (void)dlambda; (void)phi0; (void)dphi; (void)refinement;
+  g.dx = dx;
+  g.dy = dy;
+  g.west = g.east = dy * thickness;
+  g.south = g.north = dx * thickness;
+  g.horizontal = dx * dy;
+  g.volume = g.horizontal * thickness;
+  return g;
+#else
   if (pd->face_dx_scale)
   {
     double xs = PFFaceScale(pd->face_dx_scale, is, i, j, k);
@@ -47,5 +71,8 @@ static inline PFHorizontalGeometry PFGetHorizontalGeometry(
   }
   g.volume = g.horizontal * thickness;
   return g;
+#endif
 }
+
+#undef PF_FACE_METRIC_HD
 #endif
